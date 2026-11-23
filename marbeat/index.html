@@ -1,0 +1,444 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Marbeat – song to marble race video</title>
+<style>
+:root{--bg:#0b0b12;--card:#15151f;--line:#262636;--tx:#f2f2f7;--mut:#8b8ba3;--ac:#ff4d8d;--ac2:#6c5cff}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:16px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+a{color:inherit}
+header{display:flex;justify-content:space-between;align-items:center;padding:14px 20px;border-bottom:1px solid var(--line);position:sticky;top:0;background:#0b0b12ee;backdrop-filter:blur(8px);z-index:5}
+.logo{font-weight:800;font-size:20px;letter-spacing:-.5px}.logo b{color:var(--ac)}
+nav a{margin-left:18px;text-decoration:none;color:var(--mut);font-size:14px}
+nav a:hover{color:var(--tx)}
+.hero{text-align:center;padding:64px 20px 36px;max-width:760px;margin:auto}
+.hero h1{font-size:clamp(34px,6vw,60px);line-height:1.05;margin:0 0 14px;letter-spacing:-1.5px}
+.hero h1 span{background:linear-gradient(90deg,var(--ac),var(--ac2));-webkit-background-clip:text;color:transparent}
+.hero p{color:var(--mut);font-size:18px;margin:0 0 24px}
+.btn{background:linear-gradient(90deg,var(--ac),var(--ac2));border:0;color:#fff;font-weight:700;padding:12px 22px;border-radius:12px;cursor:pointer;font-size:15px;text-decoration:none;display:inline-block}
+.btn.ghost{background:var(--card);border:1px solid var(--line)}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+section{max-width:1060px;margin:auto;padding:36px 20px}
+h2{font-size:28px;letter-spacing:-.5px;margin:0 0 6px}
+.sub{color:var(--mut);margin:0 0 22px}
+.grid3{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px}
+.card .n{color:var(--ac);font-weight:800;font-size:13px}
+.card h3{margin:4px 0 6px}.card p{margin:0;color:var(--mut);font-size:14px}
+.studio{display:grid;grid-template-columns:1fr 340px;gap:18px;align-items:start}
+@media(max-width:860px){.studio{grid-template-columns:1fr}}
+.panel{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px;margin-bottom:14px}
+.panel h3{margin:0 0 10px;font-size:15px}
+label{font-size:13px;color:var(--mut);display:block;margin:8px 0 4px}
+input[type=text],select{width:100%;background:#0e0e17;border:1px solid var(--line);color:var(--tx);border-radius:8px;padding:8px;font-size:14px}
+input[type=file]{font-size:13px;color:var(--mut);width:100%}
+input[type=range]{width:100%}
+.row{display:flex;gap:8px;align-items:center}
+.row>*{flex:1}
+.stagewrap{display:flex;flex-direction:column;align-items:center;gap:10px}
+canvas#stage{width:100%;max-width:360px;aspect-ratio:9/16;background:#05050a;border-radius:16px;border:1px solid var(--line)}
+canvas#wave{width:100%;height:70px;background:#0e0e17;border-radius:8px;border:1px solid var(--line);cursor:pointer}
+.marble{display:grid;grid-template-columns:34px 1fr 110px;gap:6px;align-items:center;margin-bottom:6px}
+.marble input[type=color]{width:34px;height:34px;border:0;padding:0;background:none}
+.marble .file{grid-column:1/4;font-size:11px}
+.formats{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px}
+.tag{font-size:11px;font-weight:700;padding:2px 8px;border-radius:99px;background:#1f3a2b;color:#5be39b;margin-left:6px}
+.tag.soon{background:#2a2a3a;color:var(--mut)}
+details{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 16px;margin-bottom:8px}
+summary{cursor:pointer;font-weight:600}details p{color:var(--mut);margin:8px 0 0}
+footer{text-align:center;color:var(--mut);font-size:13px;padding:40px 20px;border-top:1px solid var(--line)}
+#status{font-size:13px;color:var(--mut);min-height:20px;text-align:center}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">Mar<b>beat</b></div>
+  <nav><a href="#studio">Studio</a><a href="#how">How</a><a href="#formats">Formats</a><a href="#faq">FAQ</a></nav>
+</header>
+
+<div class="hero">
+  <h1>Turn any song into a <span>marble race video</span></h1>
+  <p>Drop a track, give each marble a voice. Whoever's leading is who you hear. Renders in your browser. Nothing gets uploaded.</p>
+  <a class="btn" href="#studio">Start a race →</a>
+</div>
+
+<section id="how">
+  <h2>How it works</h2><p class="sub">Beats first, physics second.</p>
+  <div class="grid3">
+    <div class="card"><div class="n">01</div><h3>Feed it a song</h3><p>Upload any audio file, then pick a 15, 30 or 60 second slice on the waveform. Beats are detected automatically.</p></div>
+    <div class="card"><div class="n">02</div><h3>Name your marbles</h3><p>2–8 marbles, each with a name, colour and a "voice": a sound treatment, or its own audio file (e.g. a different cover).</p></div>
+    <div class="card"><div class="n">03</div><h3>Record &amp; post</h3><p>Hit Race. The lead marble's voice plays, handoffs land on overtakes. Record it and download the video.</p></div>
+  </div>
+</section>
+
+<section id="studio">
+  <h2>Studio</h2><p class="sub">Everything runs locally in your browser. Desktop Chrome works best for recording.</p>
+  <div class="studio">
+    <div class="stagewrap">
+      <canvas id="stage" width="720" height="1280"></canvas>
+      <div class="row" style="width:100%;max-width:360px">
+        <button class="btn" id="go" disabled>▶ Race</button>
+        <button class="btn ghost" id="stop" disabled>■ Stop</button>
+      </div>
+      <label style="display:flex;gap:8px;align-items:center;margin:0"><input type="checkbox" id="rec" checked> Record video while racing</label>
+      <div id="status">Load a song to begin.</div>
+      <a id="dl" class="btn" style="display:none">⬇ Download video</a>
+    </div>
+    <div>
+      <div class="panel">
+        <h3>1 · Song</h3>
+        <input type="file" id="song" accept="audio/*">
+        <canvas id="wave" width="600" height="70"></canvas>
+        <div class="row">
+          <div><label>Length</label>
+            <select id="len"><option value="15">15 s</option><option value="30" selected>30 s</option><option value="60">60 s</option></select></div>
+          <div><label>Beats found</label><input type="text" id="beats" value="–" disabled></div>
+        </div>
+        <label>Start: <span id="startLbl">0.0</span>s</label>
+        <input type="range" id="start" min="0" max="0" step="0.1" value="0" disabled>
+      </div>
+      <div class="panel">
+        <h3>2 · Game</h3>
+        <select id="mode">
+          <option value="race">Marble Race</option>
+          <option value="path">Musical Path</option>
+        </select>
+        <div class="row">
+          <div><label>Marbles</label><select id="count"></select></div>
+          <div><label>Rig the winner</label><select id="winner"></select></div>
+        </div>
+        <div class="row">
+          <div><label>Seed</label><input type="text" id="seed" value="42"></div>
+          <div><label>&nbsp;</label><button class="btn ghost" id="reroll" style="width:100%;padding:8px">🎲 Reroll</button></div>
+        </div>
+      </div>
+      <div class="panel">
+        <h3>3 · Marbles &amp; voices</h3>
+        <div id="marbles"></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="formats">
+  <h2>Formats</h2><p class="sub">What's built and what's next.</p>
+  <div class="formats">
+    <div class="card"><h3>Marble Race<span class="tag">Live</span></h3><p>Marbles lap a track. Leader sings.</p></div>
+    <div class="card"><h3>Musical Path<span class="tag">Live</span></h3><p>A ball bounces down a corridor on the beat; voices hand off on every hit.</p></div>
+    <div class="card"><h3>Marble Drop<span class="tag soon">Soon</span></h3><p>A marble falls through the song, every hit is a note.</p></div>
+    <div class="card"><h3>Bounce Battle<span class="tag soon">Soon</span></h3><p>Two fighters, one mic.</p></div>
+  </div>
+</section>
+
+<section id="faq">
+  <h2>FAQ</h2><p class="sub"></p>
+  <details><summary>Is the outcome random?</summary><p>It's seeded. Same seed + same song = same race, so what you preview is what you record. Pick a winner to rig it, or reroll the seed.</p></details>
+  <details><summary>What's a "voice"?</summary><p>Either a sound treatment on the main song (telephone, muffled, bright, bass, radio) or an audio file you attach to that marble, like different AI covers of the same song. Files should line up with the main song's timing.</p></details>
+  <details><summary>Does it upload my music?</summary><p>No. Decoding, beat detection and recording all happen locally.</p></details>
+  <details><summary>Music rights?</summary><p>Use audio you have the right to use. That's on you.</p></details>
+  <details><summary>Video format?</summary><p>Whatever your browser's recorder supports: MP4 in recent Chrome/Safari, otherwise WebM.</p></details>
+</section>
+
+<footer>Marbeat · independent project · not affiliated with any other marble race tool</footer>
+
+<script>
+"use strict";
+const $=id=>document.getElementById(id);
+const W=540,H=960,SC=720/540,FPS=60;
+const COLORS=["#ff4d8d","#ffb02e","#3ddc97","#4da3ff","#b06cff","#ff6b4a","#22d3ee","#e5e84a"];
+const NAMES=["Poppy","Milo","Ziggy","Juno","Rex","Bea","Otto","Luna"];
+const PRESETS={normal:"Normal",tele:"Telephone",muffled:"Muffled",bright:"Bright",bass:"Bass boost",radio:"Radio"};
+const PKEYS=Object.keys(PRESETS);
+
+let actx=null,songBuf=null,peaks=null,beatsAll=[],marbles=[];
+let run=null; // active run state
+
+// ---------- setup UI ----------
+const countSel=$("count");
+for(let i=2;i<=8;i++){countSel.add(new Option(i,i))}
+countSel.value=4;
+function initMarbles(){
+  const n=+countSel.value;
+  while(marbles.length<n){const i=marbles.length;marbles.push({name:NAMES[i],color:COLORS[i],preset:PKEYS[i%PKEYS.length],buf:null,fname:""})}
+  marbles.length=n;
+  const box=$("marbles");box.innerHTML="";
+  marbles.forEach((m,i)=>{
+    const d=document.createElement("div");d.className="marble";
+    d.innerHTML=`<input type="color" value="${m.color}"><input type="text" value="${m.name}" maxlength="14"><select>${PKEYS.map(k=>`<option value="${k}" ${k===m.preset?"selected":""}>${PRESETS[k]}</option>`).join("")}</select><input class="file" type="file" accept="audio/*" title="Optional: own audio for this marble">`;
+    const [c,t,s,f]=d.children;
+    c.oninput=()=>{m.color=c.value;draw(0)};
+    t.oninput=()=>{m.name=t.value||"?";fillWinner();draw(0)};
+    s.onchange=()=>{m.preset=s.value};
+    f.onchange=async()=>{if(!f.files[0])return;ensureCtx();try{m.buf=await actx.decodeAudioData(await f.files[0].arrayBuffer());m.fname=f.files[0].name;setStatus(`Voice file loaded for ${m.name}.`)}catch(e){setStatus("Couldn't decode that file.")}};
+    box.appendChild(d);
+  });
+  fillWinner();draw(0);
+}
+function fillWinner(){const w=$("winner"),v=w.value;w.innerHTML="";w.add(new Option("Random","-1"));marbles.forEach((m,i)=>w.add(new Option(m.name,i)));if([...w.options].some(o=>o.value===v))w.value=v}
+countSel.onchange=initMarbles;
+$("reroll").onclick=()=>{$("seed").value=Math.floor(Math.random()*99999);draw(0)};
+function setStatus(s){$("status").textContent=s}
+function ensureCtx(){if(!actx)actx=new (window.AudioContext||window.webkitAudioContext)();if(actx.state==="suspended")actx.resume()}
+
+// ---------- song load, waveform, beats ----------
+$("song").onchange=async e=>{
+  const f=e.target.files[0];if(!f)return;ensureCtx();setStatus("Decoding…");
+  try{songBuf=await actx.decodeAudioData(await f.arrayBuffer())}catch(err){setStatus("Couldn't decode that file.");return}
+  const ch=songBuf.getChannelData(0),N=600,step=Math.floor(ch.length/N);peaks=new Float32Array(N);
+  for(let i=0;i<N;i++){let m=0;for(let j=0;j<step;j+=16){const v=Math.abs(ch[i*step+j]);if(v>m)m=v}peaks[i]=m}
+  beatsAll=detectBeats(ch,songBuf.sampleRate);
+  const st=$("start");st.disabled=false;updateRange();
+  $("go").disabled=false;setStatus(`Loaded ${songBuf.duration.toFixed(1)}s · ${beatsAll.length} beats detected.`);
+};
+function detectBeats(ch,sr){
+  const hop=512,win=1024,n=Math.floor((ch.length-win)/hop),en=new Float32Array(n);
+  for(let i=0;i<n;i++){let s=0;for(let j=0;j<win;j+=2){const v=ch[i*hop+j];s+=v*v}en[i]=Math.sqrt(s/(win/2))}
+  const flux=new Float32Array(n);for(let i=1;i<n;i++)flux[i]=Math.max(0,en[i]-en[i-1]);
+  const out=[],w=Math.round(sr/hop*0.5);let last=-1;
+  for(let i=1;i<n-1;i++){
+    let a=Math.max(0,i-w),b=Math.min(n,i+w),m=0,sd=0;for(let k=a;k<b;k++)m+=flux[k];m/=(b-a);
+    for(let k=a;k<b;k++)sd+=(flux[k]-m)**2;sd=Math.sqrt(sd/(b-a));
+    const t=i*hop/sr;
+    if(flux[i]>m+1.1*sd&&flux[i]>=flux[i-1]&&flux[i]>=flux[i+1]&&t-last>0.18){out.push(t);last=t}
+  }
+  return out;
+}
+function updateRange(){
+  const len=Math.min(+$("len").value,songBuf.duration),st=$("start");
+  st.max=Math.max(0,songBuf.duration-len).toFixed(1);if(+st.value>+st.max)st.value=st.max;
+  $("startLbl").textContent=(+st.value).toFixed(1);
+  const bs=beatsAll.filter(t=>t>=+st.value&&t<+st.value+len).length;$("beats").value=bs;
+  drawWave();
+}
+$("start").oninput=updateRange;$("len").onchange=updateRange;
+function drawWave(){
+  const c=$("wave"),g=c.getContext("2d"),w=c.width,h=c.height;g.clearRect(0,0,w,h);
+  if(!peaks)return;
+  const len=Math.min(+$("len").value,songBuf.duration),s=+$("start").value,d=songBuf.duration;
+  g.fillStyle="#2a2a44";peaks.forEach((p,i)=>{const x=i/peaks.length*w,ph=p*h*.9;g.fillRect(x,(h-ph)/2,w/peaks.length+.5,ph)});
+  g.fillStyle="#ff4d8d33";g.fillRect(s/d*w,0,len/d*w,h);
+  g.strokeStyle="#ff4d8d";g.strokeRect(s/d*w,.5,len/d*w,h-1);
+}
+$("wave").onclick=e=>{if(!songBuf)return;const r=e.target.getBoundingClientRect(),len=Math.min(+$("len").value,songBuf.duration);
+  const t=(e.clientX-r.left)/r.width*songBuf.duration-len/2;$("start").value=Math.max(0,Math.min(+$("start").max,t)).toFixed(1);updateRange()};
+
+// ---------- seeded rng + timeline ----------
+function rng(seed){let a=(seed>>>0)||1;return()=>{a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+function hashSeed(s){let h=2166136261;for(const ch of String(s)){h^=ch.charCodeAt(0);h=Math.imul(h,16777619)}return h>>>0}
+
+// Race timeline: progress[i][frame] in laps, scaled so the winner ends at LAPS
+const LAPS=3;
+function buildRace(dur,beats,n,riggedIdx){
+  const R=rng(hashSeed($("seed").value)),F=Math.ceil(dur*FPS);
+  const prog=[...Array(n)].map(()=>new Float32Array(F+1));
+  const base=[...Array(n)].map(()=>1+(R()-.5)*.12),wob=[...Array(n)].map(()=>R()*6.28),wf=[...Array(n)].map(()=>.3+R()*.5);
+  const boost=new Float32Array(n);
+  let bi=0;
+  for(let f=1;f<=F;f++){
+    const t=f/FPS;
+    while(bi<beats.length&&beats[bi]<=t){const k=Math.floor(R()*n);boost[k]+=1.6+R()*1.4;if(R()<.35){boost[Math.floor(R()*n)]-=.8}bi++}
+    for(let i=0;i<n;i++){
+      const v=Math.max(.15,base[i]+.35*Math.sin(wob[i]+t*wf[i])+boost[i]);
+      boost[i]*=Math.pow(.5,1/(FPS*.35));
+      prog[i][f]=prog[i][f-1]+v/FPS;
+    }
+  }
+  let win=riggedIdx;
+  if(win<0){win=0;for(let i=1;i<n;i++)if(prog[i][F]>prog[win][F])win=i}
+  else{ // blend extra speed late into race for rigged winner so it actually wins
+    const adv=Math.max(0,Math.max(...prog.map(p=>p[F]))-prog[win][F])+.05*prog[win][F];
+    for(let f=0;f<=F;f++){const u=f/F;prog[win][f]+=adv*u*u*(3-2*u)*1.0}
+  }
+  const k=LAPS/prog[win][F];
+  prog.forEach(p=>{for(let f=0;f<=F;f++)p[f]*=k});
+  return{kind:"race",F,prog,win};
+}
+function leaderAt(tl,f){let b=0;for(let i=1;i<tl.prog.length;i++)if(tl.prog[i][f]>tl.prog[b][f])b=i;return b}
+
+// Musical path timeline: beat hits, voice = hit index mod n
+function buildPath(dur,beats,n){
+  const hits=[0,...beats.filter(t=>t>.2&&t<dur-.1)];
+  if(hits[hits.length-1]<dur)hits.push(dur);
+  return{kind:"path",F:Math.ceil(dur*FPS),hits,n};
+}
+function pathState(tl,t){
+  let i=0;while(i<tl.hits.length-2&&tl.hits[i+1]<=t)i++;
+  const a=tl.hits[i],b=tl.hits[i+1],u=Math.min(1,(t-a)/Math.max(.05,b-a));
+  return{i,u,voice:i%tl.n};
+}
+
+// ---------- drawing ----------
+const cv=$("stage"),g=cv.getContext("2d");
+const TR={cx:W/2,top:230,Ls:430,Rr:170};
+const TLEN=2*TR.Ls+2*Math.PI*TR.Rr;
+function trackPos(s,off){ // s in [0,1)
+  let d=((s%1)+1)%1*TLEN;const{cx,top,Ls,Rr}=TR;
+  const yTop=top+Rr,yBot=top+Rr+Ls;
+  if(d<Ls){return{x:cx+Rr+off,y:yTop+d}} // right side going down
+  d-=Ls;const a1=Math.PI*0+d/Rr; // bottom arc, right->left
+  if(d<Math.PI*Rr){const a=d/Rr;return{x:cx+(Rr+off)*Math.cos(a),y:yBot+(Rr+off)*Math.sin(a)}}
+  d-=Math.PI*Rr;
+  if(d<Ls){return{x:cx-Rr-off,y:yBot-d}}
+  d-=Ls;const a=Math.PI+d/Rr;return{x:cx+(Rr+off)*Math.cos(a),y:yTop+(Rr+off)*Math.sin(a)}
+}
+function bg(){
+  const gr=g.createLinearGradient(0,0,0,H);gr.addColorStop(0,"#0d0d1c");gr.addColorStop(1,"#150a1c");g.fillStyle=gr;g.fillRect(0,0,W,H);
+}
+function roundRect(x,y,w,h,r){g.beginPath();g.moveTo(x+r,y);g.arcTo(x+w,y,x+w,y+h,r);g.arcTo(x+w,y+h,x,y+h,r);g.arcTo(x,y+h,x,y,r);g.arcTo(x,y,x+w,y,r);g.closePath()}
+function drawRace(tl,f,t){
+  const n=marbles.length,{cx,top,Ls,Rr}=TR;
+  // track
+  g.lineWidth=n*26+30;g.strokeStyle="#1c1c30";g.lineCap="round";
+  g.beginPath();g.moveTo(cx+Rr,top+Rr);g.lineTo(cx+Rr,top+Rr+Ls);g.arc(cx,top+Rr+Ls,Rr,0,Math.PI);g.lineTo(cx-Rr,top+Rr);g.arc(cx,top+Rr,Rr,Math.PI,0);g.closePath();g.stroke();
+  g.lineWidth=2;g.strokeStyle="#ffffff22";g.setLineDash([8,10]);
+  g.beginPath();g.moveTo(cx+Rr,top+Rr);g.lineTo(cx+Rr,top+Rr+Ls);g.arc(cx,top+Rr+Ls,Rr,0,Math.PI);g.lineTo(cx-Rr,top+Rr);g.arc(cx,top+Rr,Rr,Math.PI,0);g.closePath();g.stroke();g.setLineDash([]);
+  // finish line
+  g.strokeStyle="#fff";g.lineWidth=4;const fa=trackPos(0,-(n*13+10)),fb=trackPos(0,n*13+10);g.beginPath();g.moveTo(fa.x,fa.y);g.lineTo(fb.x,fb.y);g.stroke();
+  const lead=leaderAt(tl,f);
+  const order=[...Array(n).keys()].sort((a,b)=>tl.prog[b][f]-tl.prog[a][f]);
+  // marbles (leader on top)
+  [...order].reverse().forEach(i=>{
+    const m=marbles[i],p=trackPos(tl.prog[i][f]*1,(i-(n-1)/2)*26),r=i===lead?17:14;
+    if(i===lead){g.fillStyle=m.color+"44";g.beginPath();g.arc(p.x,p.y,r+10+Math.sin(t*14)*3,0,6.28);g.fill()}
+    const rg=g.createRadialGradient(p.x-r/3,p.y-r/3,2,p.x,p.y,r);rg.addColorStop(0,"#fff");rg.addColorStop(.25,m.color);rg.addColorStop(1,"#000a");
+    g.fillStyle=rg;g.beginPath();g.arc(p.x,p.y,r,0,6.28);g.fill();
+  });
+  // HUD
+  g.fillStyle="#fff";g.font="bold 20px system-ui";g.textAlign="center";
+  const lap=Math.min(LAPS,Math.floor(tl.prog[lead][f])+1);
+  g.fillText(`LAP ${lap} / ${LAPS}`,W/2,50);
+  g.fillStyle=marbles[lead].color;g.font="bold 34px system-ui";g.fillText("♫ "+marbles[lead].name,W/2,100);
+  g.fillStyle="#8b8ba3";g.font="14px system-ui";g.fillText("now singing",W/2,124);
+  g.textAlign="left";g.font="bold 16px system-ui";
+  order.forEach((i,k)=>{const y=H-34-(n-k)*26;g.fillStyle=marbles[i].color;g.beginPath();g.arc(30,y-5,7,0,6.28);g.fill();
+    g.fillStyle="#fff";g.fillText(`${k+1}  ${marbles[i].name}`,46,y);
+    if(k>0){g.fillStyle="#8b8ba3";g.font="13px system-ui";g.fillText("+"+((tl.prog[order[0]][f]-tl.prog[i][f])*100/LAPS).toFixed(1)+"%",180,y);g.font="bold 16px system-ui"}});
+  if(f>=tl.F){g.fillStyle="#000a";g.fillRect(0,330,W,260);g.textAlign="center";g.fillStyle="#ffd34d";g.font="bold 28px system-ui";g.fillText("🏆 WINNER",W/2,400);
+    g.fillStyle=marbles[order[0]].color;g.font="bold 56px system-ui";g.fillText(marbles[order[0]].name,W/2,480)}
+  g.textAlign="left";
+}
+function drawPath(tl,t){
+  const n=marbles.length,st=pathState(tl,t),m=marbles[st.voice],x0=90,x1=W-90;
+  const stepH=70,y0=190;
+  // corridor + boxes at every hit
+  for(let i=0;i<tl.hits.length-1;i++){
+    const y=y0+i*stepH-camY(tl,st),side=i%2===0?x1:x0;if(y<-40||y>H+40)continue;
+    const c=marbles[i%n].color,act=i===st.i;
+    g.fillStyle=act?c:c+"55";roundRect(side-28,y-9,56,18,9);g.fill();
+  }
+  // ball
+  const sA=st.i%2===0?x0:x1,sB=st.i%2===0?x1:x0;
+  // bounces from prev wall to next wall: ball starts at wall of previous hit
+  const px=st.i===0?W/2:(st.i%2===1?x0:x1),nx=st.i%2===0?x1:x0;
+  const bx=px+(nx-px)*st.u,by=y0+st.i*stepH+ (stepH)*st.u - 0 - 4*stepH*.6*st.u*(1-st.u) - camY(tl,st);
+  g.fillStyle=m.color+"55";g.beginPath();g.arc(bx,by,26,0,6.28);g.fill();
+  const rg=g.createRadialGradient(bx-6,by-6,2,bx,by,18);rg.addColorStop(0,"#fff");rg.addColorStop(.3,m.color);rg.addColorStop(1,"#000a");
+  g.fillStyle=rg;g.beginPath();g.arc(bx,by,18,0,6.28);g.fill();
+  g.textAlign="center";g.fillStyle=m.color;g.font="bold 34px system-ui";g.fillText("♫ "+m.name,W/2,70);
+  g.fillStyle="#8b8ba3";g.font="14px system-ui";g.fillText("now singing",W/2,94);
+  g.fillStyle="#fff";g.font="bold 16px system-ui";g.fillText(`hit ${st.i}`,W/2,H-30);g.textAlign="left";
+}
+function camY(tl,st){return Math.max(0,(st.i+st.u)*70-360)}
+function draw(t){
+  g.setTransform(SC,0,0,SC,0,0);bg();
+  if(!run){ // idle preview: first frame
+    if(!songBuf){g.fillStyle="#fff";g.textAlign="center";g.font="bold 34px system-ui";g.fillText("Load a song",W/2,H/2-10);g.fillStyle="#8b8ba3";g.font="16px system-ui";g.fillText("then hit Race",W/2,H/2+22);g.textAlign="left";return}
+    const tl=getTL(),f=0;if(tl.kind==="race")drawRace(tl,f,0);else drawPath(tl,0);return;
+  }
+  const f=Math.min(run.tl.F,Math.floor(t*FPS));
+  if(run.tl.kind==="race")drawRace(run.tl,f,t);else drawPath(run.tl,t);
+}
+function getTL(){
+  const len=Math.min(+$("len").value,songBuf.duration),s=+$("start").value;
+  const beats=beatsAll.filter(t=>t>=s&&t<s+len).map(t=>t-s);
+  const n=marbles.length;
+  return $("mode").value==="race"?buildRace(len,beats,n,+$("winner").value):buildPath(len,beats,n);
+}
+
+// ---------- playback + recording ----------
+const EFFECTS={
+  normal:c=>c.createGain(),
+  tele:c=>{const f=c.createBiquadFilter();f.type="bandpass";f.frequency.value=1400;f.Q.value=.9;return f},
+  muffled:c=>{const f=c.createBiquadFilter();f.type="lowpass";f.frequency.value=700;return f},
+  bright:c=>{const f=c.createBiquadFilter();f.type="highpass";f.frequency.value=2200;return f},
+  bass:c=>{const f=c.createBiquadFilter();f.type="lowshelf";f.frequency.value=220;f.gain.value=14;return f},
+  radio:c=>{const f=c.createBiquadFilter();f.type="bandpass";f.frequency.value=2000;f.Q.value=.6;const w=c.createWaveShaper();const cu=new Float32Array(256);for(let i=0;i<256;i++){const x=i/128-1;cu[i]=Math.tanh(x*3)}w.curve=cu;f.connect(w);f.out=w;return f}
+};
+function voiceLeader(tl,f,t){return tl.kind==="race"?leaderAt(tl,f):pathState(tl,t).voice}
+
+async function startRun(){
+  if(!songBuf)return;ensureCtx();stopRun(true);$("dl").style.display="none";
+  const len=Math.min(+$("len").value,songBuf.duration),s=+$("start").value,tl=getTL(),n=marbles.length;
+  const master=actx.createGain(),dest=actx.createMediaStreamDestination();
+  master.connect(actx.destination);master.connect(dest);
+  const gains=[],srcs=[];
+  marbles.forEach((m,i)=>{
+    const src=actx.createBufferSource();src.buffer=m.buf||songBuf;
+    const fx=m.buf?actx.createGain():EFFECTS[m.preset](actx);const gn=actx.createGain();gn.gain.value=0;
+    src.connect(fx);(fx.out||fx).connect(gn);gn.connect(master);gains.push(gn);srcs.push(src);
+  });
+  const t0=actx.currentTime+.25;
+  // schedule voice handoffs from timeline
+  const F=tl.F;let cur=-1;
+  for(let f=0;f<=F;f++){
+    const t=f/FPS,v=voiceLeader(tl,f,t);
+    if(v!==cur){
+      gains.forEach((gn,i)=>{gn.gain.setTargetAtTime(i===v?1:0,t0+t,.012)});
+      cur=v;
+    }
+  }
+  srcs.forEach(src=>src.start(t0,s,len));
+  run={tl,t0,len,srcs,gains,raf:0,dest,rec:null,chunks:[]};
+  if($("rec").checked&&window.MediaRecorder){
+    const vs=cv.captureStream(30);
+    const stream=new MediaStream([...vs.getVideoTracks(),...dest.stream.getAudioTracks()]);
+    const mt=["video/mp4;codecs=avc1,mp4a.40.2","video/mp4","video/webm;codecs=vp9,opus","video/webm;codecs=vp8,opus","video/webm"].find(t=>MediaRecorder.isTypeSupported(t));
+    try{
+      const rec=new MediaRecorder(stream,{mimeType:mt,videoBitsPerSecond:8e6});
+      rec.ondataavailable=e=>{if(e.data.size)run&&run.chunks.push(e.data)};
+      rec.onstop=()=>finishRec(rec,mt);
+      rec.start(250);run.rec=rec;
+    }catch(e){setStatus("Recording not supported here, playing only.")}
+  }
+  $("go").disabled=true;$("stop").disabled=false;setStatus("Racing…");
+  const loop=()=>{
+    if(!run)return;
+    const t=actx.currentTime-run.t0;
+    if(t<0){draw(0);run.raf=requestAnimationFrame(loop);return}
+    draw(Math.min(t,len));
+    if(t>=len+1.2){endRun();return}
+    run.raf=requestAnimationFrame(loop);
+  };
+  loop();
+}
+function finishRec(rec,mt){
+  const r=run||lastRun;if(!r)return;
+  const blob=new Blob(r.chunks,{type:mt||"video/webm"});
+  const a=$("dl");a.href=URL.createObjectURL(blob);a.download="marbeat."+(mt&&mt.includes("mp4")?"mp4":"webm");a.style.display="inline-block";
+  setStatus("Done. Download your video below.");
+}
+let lastRun=null;
+function endRun(){
+  if(!run)return;lastRun=run;
+  cancelAnimationFrame(run.raf);
+  try{run.srcs.forEach(s=>s.stop())}catch(e){}
+  const r=run.rec;
+  if(r&&r.state!=="inactive"){r.stop()}else setStatus("Done.");
+  run=null;$("go").disabled=false;$("stop").disabled=true;
+}
+function stopRun(silent){
+  if(!run)return;
+  if(run.rec){run.rec.onstop=null;try{run.rec.stop()}catch(e){}}
+  cancelAnimationFrame(run.raf);try{run.srcs.forEach(s=>s.stop())}catch(e){}
+  run=null;$("go").disabled=!songBuf;$("stop").disabled=true;if(!silent)setStatus("Stopped.");
+}
+$("go").onclick=startRun;$("stop").onclick=()=>stopRun(false);
+["mode","winner","seed","len","start"].forEach(id=>$(id).addEventListener("change",()=>{if(!run)draw(0)}));
+$("seed").addEventListener("input",()=>{if(!run)draw(0)});
+
+initMarbles();
+</script>
+</body>
+</html>
