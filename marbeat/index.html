@@ -57,6 +57,10 @@ textarea{width:100%;min-height:84px;background:#0e0e17;border:1px solid var(--li
 .dirrow input[type=number]{width:100%;background:#0e0e17;border:1px solid var(--line);color:var(--tx);border-radius:8px;padding:6px}
 .note{font-size:12px;color:var(--mut);margin:0 0 8px}
 .btn.sm{padding:8px 10px;font-size:13px}
+.marble .clone{grid-column:1/4;display:flex;gap:6px;align-items:center;font-size:11px;color:var(--mut)}
+.marble .clone input{flex:1;min-width:0}
+.marble .clone button{background:#0e0e17;border:1px solid var(--line);color:var(--mut);border-radius:6px;cursor:pointer}
+.marble .clone .tag2{color:#5be39b}
 </style>
 </head>
 <body>
@@ -147,13 +151,15 @@ So cheer for your favourite one and watch them go go go</textarea>
         <label class="chk"><input type="checkbox" id="loop"> Repeat lyrics (only if they're shorter than the section)</label>
         <label>Nudge: <span id="syncLbl">0.00</span>s (negative = earlier, positive = later)</label>
         <input type="range" id="syncoff" min="-0.6" max="0.6" step="0.02" value="0" oninput="document.getElementById('syncLbl').textContent=(+this.value).toFixed(2)">
+        <label class="chk"><input type="checkbox" id="autoft" checked> Auto fine-tune timing (lines words up with the song's vocal hits)</label>
         <label class="chk"><input type="checkbox" id="melody" checked> Follow the song's melody (rough)</label>
         <label class="chk"><input type="checkbox" id="novox"> Reduce original vocals (stereo songs)</label>
-        <label>Song under the voices: <span id="bvLbl">40</span>%</label>
-        <input type="range" id="backvol" min="0" max="100" value="40" oninput="document.getElementById('bvLbl').textContent=this.value">
+        <label>Song under the voices: <span id="bvLbl">50</span>% (it dips while someone sings)</label>
+        <input type="range" id="backvol" min="0" max="100" value="50" oninput="document.getElementById('bvLbl').textContent=this.value">
       </div>
       <div class="panel">
         <h3>4 · Marbles &amp; voices</h3>
+        <p class="note">🎤 <b>Clone a voice:</b> under any marble, upload 5–15 seconds of one person talking clearly (no music). That marble then sings in that voice. First use loads about 150 MB; it needs the web address, not the file.</p>
         <div id="marbles"></div>
       </div>
     </div>
@@ -190,14 +196,14 @@ const COLORS=["#ff4d8d","#ffb02e","#3ddc97","#4da3ff","#b06cff","#ff6b4a","#22d3
 const NAMES=["Poppy","Milo","Ziggy","Juno","Rex","Bea","Otto","Luna"];
 // Parody-style character archetypes (original, not clones of anyone). espeak = synth params, ratio/fx = post processing
 const VDEF={
-  ogre:{label:"Gruff Ogre",sid:71,f0n:81,nr:0.85,variant:"croak",pitch:8,speed:150,mel:.7,ratio:.82,fx:"grit",drive:2.2},
-  sponge:{label:"Squeaky Sponge",sid:49,f0n:245,nr:1.12,variant:"f3",pitch:92,speed:185,mel:.8,ratio:1.22,fx:"nasal"},
+  ogre:{label:"Gruff Ogre",sid:71,f0n:81,nr:0.88,variant:"croak",pitch:8,speed:150,mel:.7,ratio:.82,fx:"grit",drive:2.2},
+  sponge:{label:"Squeaky Sponge",sid:49,f0n:245,nr:1.08,variant:"f3",pitch:92,speed:185,mel:.8,ratio:1.22,fx:"nasal"},
   butler:{label:"Robot Butler",sid:97,f0n:88,nr:1.0,variant:"m7",pitch:42,speed:160,mel:.25,ratio:.95,fx:"ring"},
   pirate:{label:"Salty Pirate",sid:13,f0n:91,nr:0.95,variant:"m1",pitch:28,speed:155,mel:.8,ratio:.92,fx:"grit",drive:1.6},
   granny:{label:"Cranky Granny",sid:59,f0n:170,nr:1.0,variant:"f1",pitch:70,speed:150,mel:.9,ratio:1.04,fx:"none"},
-  alien:{label:"Space Alien",sid:6,f0n:251,nr:1.25,variant:"f4",pitch:99,speed:170,mel:.7,ratio:1.3,fx:"trem"},
-  monster:{label:"Swamp Monster",sid:76,f0n:81,nr:0.65,variant:"croak",pitch:0,speed:135,mel:.6,ratio:.6,fx:"grit",drive:3.2},
-  chipmunk:{label:"Chipmunk",sid:36,f0n:242,nr:1.5,variant:"m2",pitch:99,speed:200,mel:.9,ratio:1.5,fx:"none"}
+  alien:{label:"Space Alien",sid:6,f0n:251,nr:1.15,variant:"f4",pitch:99,speed:170,mel:.7,ratio:1.3,fx:"trem"},
+  monster:{label:"Swamp Monster",sid:76,f0n:81,nr:0.78,variant:"croak",pitch:0,speed:135,mel:.6,ratio:.6,fx:"grit",drive:3.2},
+  chipmunk:{label:"Chipmunk",sid:36,f0n:242,nr:1.3,variant:"m2",pitch:99,speed:200,mel:.9,ratio:1.5,fx:"none"}
 };
 const VOICES=Object.fromEntries(Object.entries(VDEF).map(([k,v])=>[k,v.label]));
 const VKEYS=Object.keys(VOICES);
@@ -218,12 +224,27 @@ function initMarbles(){
   const box=$("marbles");box.innerHTML="";
   marbles.forEach(m=>{
     const d=document.createElement("div");d.className="marble";
-    d.innerHTML=`<input type="color" value="${m.color}"><input type="text" value="${m.name}" maxlength="14"><select>${VKEYS.map(k=>`<option value="${k}" ${k===m.preset?"selected":""}>${VOICES[k]}</option>`).join("")}</select><input class="file" type="file" accept="audio/*" title="Optional: own audio for this marble">`;
-    const [c,t,s,f]=d.children;
+    d.innerHTML=`<input type="color" value="${m.color}"><input type="text" value="${m.name}" maxlength="14"><select>${VKEYS.map(k=>`<option value="${k}" ${k===m.preset?"selected":""}>${VOICES[k]}</option>`).join("")}</select><input class="file" type="file" accept="audio/*" title="Optional: own audio for this marble"><div class="clone"><span>🎤 Clone a voice:</span><input type="file" accept="audio/*" title="Upload 5-15 seconds of one person talking"><button title="Remove cloned voice" style="display:none">✕</button></div>`;
+    const [c,t,s,f,cl]=d.children;
+    const clIn=cl.querySelector("input"),clX=cl.querySelector("button"),clTxt=cl.querySelector("span");
+    if(m.clone){clTxt.innerHTML='<span class="tag2">🎤 '+m.clone.fname+'</span>';clX.style.display='';s.disabled=true}
     c.oninput=()=>{m.color=c.value;idleDraw()};
     t.oninput=()=>{m.name=t.value||"?";fillWinner();renderDir();idleDraw()};
     s.onchange=()=>{m.preset=s.value};
     f.onchange=async()=>{if(!f.files[0])return;ensureCtx();try{m.buf=await actx.decodeAudioData(await f.files[0].arrayBuffer());m.fname=f.files[0].name;m.bufId=Math.random();setStatus(`Voice file loaded for ${m.name}.`)}catch(e){setStatus("Couldn't decode that file.")}};
+    clIn.onchange=async()=>{
+      if(!clIn.files[0])return;const file=clIn.files[0];
+      try{
+        setStatus("Reading your voice sample…");
+        const pr=await prepClone(file);
+        const name="v"+Math.random().toString(36).slice(2,8);
+        await cloneEncode(name,pr.audio);
+        m.clone={name,f0:pr.f0,fname:file.name.slice(0,22)};
+        setStatus(`Voice cloned for ${m.name} (${pr.f0?Math.round(pr.f0)+" Hz":"pitch unknown"}). It sings whenever ${m.name} leads.`);
+        initMarbles();
+      }catch(e){setStatus("Cloning failed: "+(e&&e.message||e)+". Open Marbeat from its web address, not the file.");clIn.value=""}
+    };
+    clX.onclick=()=>{m.clone=null;initMarbles();setStatus("Cloned voice removed.")};
     box.appendChild(d);
   });
   fillWinner();renderDir();idleDraw();
@@ -669,7 +690,7 @@ function vocalAnalysis(s,len){
   }
   if(cur)regs.push(cur);
   regs=regs.filter(r=>r.b-r.a>.45);
-  const out={onsets,regions:regs};vaCache[key]=out;return out;
+  const out={onsets,regions:regs,flux};vaCache[key]=out;return out;
 }
 function vocalOnsets(s,len){return vocalAnalysis(s,len).onsets}
 
@@ -684,7 +705,23 @@ function finishSlots(slots,len){
   return out.length?out:null;
 }
 // Align lyrics to the song. Modes: phrase (default), hits (one onset per syllable), beat, even, tap (manual)
+let lastCal=0;
+// try small global shifts and keep the one where the words sit best on the song's vocal hits
+function calibrateSlots(slots,s,len){
+  const fl=vocalAnalysis(s,len).flux;if(!fl||slots.length<6)return{slots,shift:0};
+  const at=t=>{let m=0;const c=Math.round(t*100);for(let k=c-2;k<=c+2;k++)if(k>=0&&k<fl.length&&fl[k]>m)m=fl[k];return m};
+  const score=off=>{let sc=0;for(const sl of slots)sc+=at(sl.t0+off+.04);return sc}; // flux peaks ~40ms after a word really starts
+  const base=score(0);let best=0,bs=base;
+  for(let off=-.25;off<=.2501;off+=.01){const sc=score(off);if(sc>bs){bs=sc;best=off}}
+  if(Math.abs(best)<.015||bs<base*1.08)return{slots,shift:0};
+  return{slots:slots.map(x=>({...x,t0:x.t0+best,t1:x.t1+best})),shift:best};
+}
 function computeSlots(beats,len,text,mode,s,off,loop){
+  const raw=computeSlotsRaw(beats,len,text,mode,s,off,loop);lastCal=0;
+  if(!raw||!$("autoft").checked||mode==="tap"||mode==="even"||mode==="beat")return raw;
+  const r=calibrateSlots(raw,s,len);lastCal=r.shift;return r.slots;
+}
+function computeSlotsRaw(beats,len,text,mode,s,off,loop){
   const lines=text.split(/\n+/).map(l=>l.split(/\s+/).filter(Boolean)).filter(l=>l.length);
   if(!lines.length)return null;
   if(mode==="ai"){
@@ -772,6 +809,16 @@ async function synthTrack(vkey,slots,offs,len){
   }
   return normalize(applyFx(out,v,SR),.9);
 }
+function duckBacking(back,bufs,depth){
+  // lower the song while any voice is singing so the voices sit on top
+  const hopS=Math.floor(back.sampleRate*.02),n=Math.floor(back.length/hopS),env=new Float32Array(n);
+  for(const b of bufs){const d=b.getChannelData(0),h=Math.floor(b.sampleRate*.02);
+    for(let i=0;i<n;i++){let e=0;const a=i*h;for(let j=0;j<h&&a+j<d.length;j++)e=Math.max(e,Math.abs(d[a+j]));if(e>env[i])env[i]=e}}
+  const g=new Float32Array(n);let cur=1;
+  for(let i=0;i<n;i++){const want=1-depth*Math.min(1,env[i]/.08);cur+=(want-cur)*(want<cur?.5:.08);g[i]=cur}
+  const d=back.getChannelData(0);
+  for(let i=0;i<n;i++)for(let j=0;j<hopS;j++){const k=i*hopS+j;if(k<d.length)d[k]*=g[i]}
+}
 function backingBuf(s,len,reduce){
   const src=songBuf,sr=src.sampleRate,a=Math.floor(s*sr),N=Math.floor(len*sr),L=src.getChannelData(0),R=src.numberOfChannels>1?src.getChannelData(1):null,out=new Float32Array(N);
   for(let i=0;i<N;i++){const l=L[a+i]||0,r=R?(R[a+i]||0):l;out[i]=(reduce&&R)?(l-r)*.5:(l+r)*.5}
@@ -786,7 +833,12 @@ async function voiceBuffer(m,s,len,vc,mi){
     const buf=actx.createBuffer(1,N,sr);buf.copyToChannel(normalize(seg,.9),0);voiceCache.set(key,buf);return buf;
   }
   let key,out,sr;
-  if(vc.engine==="sing"&&vc.neural){
+  if(vc.engine==="sing"&&m.clone&&!vc.noClone){
+    const sig=hashStr(vc.slots.map((_,i)=>vc.need[i].has(mi)?1:0).join(""));
+    key=`${songId}|clone|${m.clone.name}|${s}|${len}|${vc.slotHash}|${vc.melody}|${sig}`;
+    if(voiceCache.has(key))return voiceCache.get(key);
+    out=await cloneTrack(m,mi,vc,len);sr=22050;
+  }else if(vc.engine==="sing"&&vc.neural){
     const sig=hashStr(vc.slots.map((_,i)=>vc.need[i].has(mi)?1:0).join(""));
     key=`${songId}|neural|${m.preset}|${s}|${len}|${vc.slotHash}|${vc.melody}|${sig}`;
     if(voiceCache.has(key))return voiceCache.get(key);
@@ -806,6 +858,7 @@ async function voiceBuffer(m,s,len,vc,mi){
 // ================= NEURAL VOICES (Piper, local) =================
 let piperP=null;
 const rawCache=new Map(); // "sid|word" -> natural speech for that word
+const rawIds=new Map(),lsCache=new Map(); // word -> phoneme ids; "sid|word|ls" -> re-timed speech
 async function getPiper(){
   if(piperP)return piperP;
   piperP=(async()=>{
@@ -874,7 +927,7 @@ function fxOnly(y,v,sr){
 // natural word -> sung word: fit the slot length, land on the target pitch, then apply the character effect
 function singWord(raw,v,semis,D,sr){
   const f0w=estF0(raw,sr)||v.f0n,ft=v.f0n*v.nr*Math.pow(2,semis*v.mel/12);
-  const r=Math.max(.5,Math.min(2,ft/f0w));
+  const r=Math.max(.7,Math.min(1.5,ft/f0w));
   let sf=(D*r*sr)/raw.length;sf=Math.max(.42,Math.min(4.5,sf));
   const st=Math.abs(sf-1)<.04?raw.slice():wsola(raw,sf);
   const n=Math.floor(st.length/r);
@@ -883,7 +936,7 @@ function singWord(raw,v,semis,D,sr){
   const f=Math.floor(sr*.006);for(let i=0;i<f&&i<out.length;i++){out[i]*=i/f;out[out.length-1-i]*=i/f} // de-click
   let e=0,c=0,pk=0;for(const q of out)pk=Math.max(pk,Math.abs(q));
   for(const q of out)if(Math.abs(q)>pk*.1){e+=q*q;c++}
-  const rms=Math.sqrt(e/Math.max(1,c))||1,g=Math.min(.16/rms,.95/Math.max(1e-6,pk)*1.0);
+  const rms=Math.sqrt(e/Math.max(1,c))||1,g=Math.min(.27/rms,1.6/Math.max(1e-6,pk));
   for(let i=0;i<out.length;i++)out[i]*=g;
   return out;
 }
@@ -902,18 +955,30 @@ async function prepareRaw(pi,pairs){
   for(const p of need){
     n++;if(n%4===0){setStatus(`Synthesizing neural voices… ${n}/${need.length}`);await sleep()}
     const id=idOf.get(p.word);let x;
-    if(id&&id.length>2){x=trimSil(await pi.synth(id,p.sid,.85),pi.sampleRate)}
+    if(id&&id.length>2){x=trimSil(await pi.synth(id,p.sid,.85),pi.sampleRate);rawIds.set(p.word,id)}
     else{const w=speakWord(p.word,VDEF.pirate,45,150);x=w.x.slice()}
     rawCache.set(p.sid+"|"+p.word,{x,sr:pi.sampleRate});
   }
 }
 async function neuralTrack(m,mi,vc,len){
   const v=VDEF[m.preset],SR=22050,out=new Float32Array(Math.floor(len*SR));
+  const pi=await getPiper();
   for(let i=0;i<vc.slots.length;i++){
     if(!vc.need[i].has(mi))continue;
     const sl=vc.slots[i],raw=rawCache.get(v.sid+"|"+sl.text);if(!raw||!raw.x.length)continue;
-    const D=Math.min(1.3,sl.t1-sl.t0),semis=(vc.offs[i]||0)/2.2;
-    const w=singWord(raw.x,v,semis,D,raw.sr);
+    const D=Math.min(1.3,sl.t1-sl.t0),semis=Math.max(-5,Math.min(5,(vc.offs[i]||0)/2.2));
+    // ask the neural voice itself to speak the word slower/faster so it fits (sounds far better than stretching audio)
+    let x=raw.x;const ids=rawIds.get(sl.text);
+    if(ids){
+      const f0w=estF0(raw.x,raw.sr)||v.f0n,r=Math.max(.7,Math.min(1.5,v.f0n*v.nr*Math.pow(2,semis*v.mel/12)/f0w));
+      const ls=Math.max(.55,Math.min(2.6,.85*(D*r)/(raw.x.length/raw.sr)));
+      if(Math.abs(ls/.85-1)>.12){
+        const k=`${v.sid}|${sl.text}|${ls.toFixed(2)}`;
+        if(!lsCache.has(k))lsCache.set(k,trimSil(await pi.synth(ids,v.sid,ls),pi.sampleRate));
+        x=lsCache.get(k);
+      }
+    }
+    const w=singWord(x,v,semis,D,raw.sr);
     // line up the word's attack (not its soft lead-in) with the slot time, so it feels on the beat
     let pk=0;for(let j=0;j<w.length;j+=2)pk=Math.max(pk,Math.abs(w[j]));
     let lead=0;while(lead<w.length&&Math.abs(w[lead])<pk*.25)lead++;
@@ -921,7 +986,91 @@ async function neuralTrack(m,mi,vc,len){
     for(let j=0;j<w.length&&st+j<out.length;j++)out[st+j]+=w[j];
     if(i%12===11)await sleep();
   }
-  for(let i=0;i<out.length;i++)out[i]=Math.tanh(out[i]*1.2)/1.2;
+  for(let i=0;i<out.length;i++)out[i]=Math.tanh(out[i]*1.1)/1.1;
+  return out;
+}
+
+// ================= VOICE CLONING (Pocket TTS, local) =================
+// Upload a few seconds of someone talking; Pocket TTS then speaks any word in that voice.
+let cloneW=null,cloneReadyP=null,cloneHandler=null,cloneBusy=Promise.resolve();
+const cloneRaw=new Map(); // "name|word" -> {x,sr:24000}
+function getCloneWorker(){
+  if(cloneReadyP)return cloneReadyP;
+  cloneReadyP=new Promise((resolve,reject)=>{
+    const w=new Worker(new URL("ai/clone/worker.js",location.href).href);cloneW=w;
+    w.onerror=e=>{cloneReadyP=null;reject(new Error("could not start the cloning engine ("+(e.message||"load error")+")"))};
+    w.onmessage=ev=>{
+      const m=ev.data;
+      if(m.type==="status"&&m.state==="loading"){setStatus(m.status+" (first time can take a minute)")}
+      else if(m.type==="loaded")resolve(w);
+      else if(m.type==="error"&&!cloneHandler){cloneReadyP=null;reject(new Error(m.error))}
+      else if(cloneHandler)cloneHandler(m);
+    };
+    w.postMessage({type:"load"});
+  });
+  return cloneReadyP;
+}
+function cloneRun(fn){const p=cloneBusy.then(fn);cloneBusy=p.catch(()=>{});return p}
+async function cloneEncode(name,audio){
+  const w=await getCloneWorker();
+  return cloneRun(()=>new Promise((res,rej)=>{
+    cloneHandler=m=>{if(m.type==="voice_encoded"){cloneHandler=null;res()}else if(m.type==="error"){cloneHandler=null;rej(new Error(m.error))}};
+    w.postMessage({type:"encode_voice",data:{audio,name}},[audio.buffer]);
+  }));
+}
+async function cloneSay(name,text){
+  const w=await getCloneWorker();
+  return cloneRun(()=>new Promise((res,rej)=>{
+    const chunks=[];
+    cloneHandler=m=>{
+      if(m.type==="audio_chunk")chunks.push(m.data);
+      else if(m.type==="stream_ended"){cloneHandler=null;let n=0;for(const c of chunks)n+=c.length;const out=new Float32Array(n);let o=0;for(const c of chunks){out.set(c,o);o+=c.length}res(out)}
+      else if(m.type==="error"){cloneHandler=null;rej(new Error(m.error))}
+    };
+    w.postMessage({type:"generate",data:{text,voice:name}});
+  }));
+}
+// sample file -> 24 kHz mono, silence trimmed, max 12 s
+async function prepClone(file){
+  ensureCtx();
+  const buf=await actx.decodeAudioData(await file.arrayBuffer());
+  const sr=buf.sampleRate,c0=buf.getChannelData(0),c1=buf.numberOfChannels>1?buf.getChannelData(1):c0;
+  let mono=new Float32Array(buf.length);for(let i=0;i<mono.length;i++)mono[i]=(c0[i]+c1[i])/2;
+  mono=trimSil(mono,sr);
+  if(mono.length<sr*2)throw new Error("that sample is too short; use at least 3 seconds of one person talking");
+  mono=mono.slice(0,Math.floor(sr*12));
+  const b=actx.createBuffer(1,mono.length,sr);b.copyToChannel(mono,0);
+  const oc=new OfflineAudioContext(1,Math.ceil(mono.length/sr*24000),24000),so=oc.createBufferSource();so.buffer=b;so.connect(oc.destination);so.start();
+  const out=(await oc.startRendering()).getChannelData(0).slice();
+  let pk=0;for(let i=0;i<out.length;i+=3)pk=Math.max(pk,Math.abs(out[i]));
+  if(pk>0){const g=.9/pk;for(let i=0;i<out.length;i++)out[i]*=g}
+  return{audio:out,f0:estF0(out,24000)||150};
+}
+async function prepareClone(pairs){
+  const seen=new Set(),need=pairs.filter(p=>{const k=p.name+"|"+p.word;if(cloneRaw.has(k)||seen.has(k))return false;seen.add(k);return true});
+  let n=0;
+  for(const p of need){
+    n++;setStatus(`Cloned voices speaking… ${n}/${need.length}`);await sleep();
+    const txt=cleanWord(p.word);
+    const x=txt?trimSil(await cloneSay(p.name,txt),24000):new Float32Array(0);
+    cloneRaw.set(p.name+"|"+p.word,{x,sr:24000});
+  }
+}
+async function cloneTrack(m,mi,vc,len){
+  const v={f0n:m.clone.f0||150,nr:1,mel:.6,fx:"none"},SR=22050,out=new Float32Array(Math.floor(len*SR)),ratio=24000/SR;
+  for(let i=0;i<vc.slots.length;i++){
+    if(!vc.need[i].has(mi))continue;
+    const sl=vc.slots[i],raw=cloneRaw.get(m.clone.name+"|"+sl.text);if(!raw||raw.x.length<200)continue;
+    const D=Math.min(1.3,sl.t1-sl.t0),semis=Math.max(-5,Math.min(5,(vc.offs[i]||0)/2.2));
+    const w24=singWord(raw.x,v,semis,D,24000),n=Math.floor(w24.length/ratio),w=new Float32Array(n);
+    for(let j=0;j<n;j++){const p=j*ratio,i0=Math.floor(p),fr=p-i0;w[j]=w24[i0]*(1-fr)+(w24[i0+1]||0)*fr}
+    let pk=0;for(let j=0;j<w.length;j+=2)pk=Math.max(pk,Math.abs(w[j]));
+    let lead=0;while(lead<w.length&&Math.abs(w[lead])<pk*.25)lead++;
+    const st=Math.max(0,Math.floor(sl.t0*SR)-Math.min(lead,Math.floor(SR*.12)));
+    for(let j=0;j<w.length&&st+j<out.length;j++)out[st+j]+=w[j];
+    if(i%8===7)await sleep();
+  }
+  for(let i=0;i<out.length;i++)out[i]=Math.tanh(out[i]*1.1)/1.1;
   return out;
 }
 
@@ -1134,11 +1283,17 @@ async function startRun(){
       set.add(tl.kind==="race"?tl.leadA[Math.min(f1,tl.F)]:pathState(tl,f1/FPS).voice);
       return set;
     });
+    const cpairs=[];
+    vc.slots.forEach((sl,i)=>vc.need[i].forEach(mi=>{const mm=marbles[mi];if(mm.clone)cpairs.push({name:mm.clone.name,word:sl.text})}));
+    if(cpairs.length){
+      try{await prepareClone(cpairs)}
+      catch(e){console.warn(e);vc.noClone=true;setStatus("Cloned voices failed ("+(e&&e.message||e)+"). Using the preset voices instead.");await sleep()}
+    }
     vc.neural=$("voiceq").value==="neural";
     if(vc.neural){
       try{
         const pi=await getPiper();
-        const pairs=[];vc.slots.forEach((sl,i)=>vc.need[i].forEach(mi=>pairs.push({sid:VDEF[marbles[mi].preset].sid,word:sl.text})));
+        const pairs=[];vc.slots.forEach((sl,i)=>vc.need[i].forEach(mi=>{if(marbles[mi].clone&&!vc.noClone)return;pairs.push({sid:VDEF[marbles[mi].preset].sid,word:sl.text})}));
         await prepareRaw(pi,pairs);
       }catch(e){
         console.warn(e);vc.neural=false;
@@ -1151,17 +1306,19 @@ async function startRun(){
   try{for(let i=0;i<n;i++){setStatus(`Synthesizing voices… ${i+1}/${n} (${VOICES[marbles[i].preset]})`);await sleep();bufs.push(await voiceBuffer(marbles[i],s,len,vc,i))}}
   catch(e){setStatus("Voice synthesis failed: "+e.message);$("go").disabled=false;return}
   const master=actx.createGain(),dest=actx.createMediaStreamDestination();
-  master.connect(actx.destination);master.connect(dest);
+  const comp=actx.createDynamicsCompressor();comp.threshold.value=-20;comp.knee.value=12;comp.ratio.value=4;comp.attack.value=.004;comp.release.value=.18;
+  const makeup=actx.createGain();makeup.gain.value=1.8; // overall loudness
+  master.connect(comp);comp.connect(makeup);makeup.connect(actx.destination);makeup.connect(dest);
   const gains=[],srcs=[];
   bufs.forEach(b=>{const src=actx.createBufferSource();src.buffer=b;const gn=actx.createGain();gn.gain.value=0;src.connect(gn);gn.connect(master);gains.push(gn);srcs.push(src)});
-  if(vc.backing){const bs=actx.createBufferSource();bs.buffer=vc.backing;const bg=actx.createGain();bg.gain.value=+$("backvol").value/100;bs.connect(bg);bg.connect(master);srcs.push(bs)}
+  if(vc.backing){duckBacking(vc.backing,bufs,.6);const bs=actx.createBufferSource();bs.buffer=vc.backing;const bg=actx.createGain();bg.gain.value=+$("backvol").value/100;bs.connect(bg);bg.connect(master);srcs.push(bs)}
   const t0=actx.currentTime+.3;let cur=-1;
   for(let f=0;f<=tl.F;f++){
     const t=f/FPS,v=tl.kind==="race"?tl.leadA[f]:pathState(tl,t).voice;
     if(v!==cur){gains.forEach((gn,i)=>gn.gain.setTargetAtTime(i===v?1:0,t0+t,.012));cur=v}
   }
   srcs.forEach(src=>src.start(t0,0));
-  run={tl,t0,len,srcs,raf:0,rec:null,chunks:[],beatsRel:beats,slots:vc.slots,need:vc.need};
+  run={tl,t0,len,srcs,raf:0,rec:null,chunks:[],beatsRel:beats,slots:vc.slots,need:vc.need,back:vc.backing};
   if($("rec").checked&&window.MediaRecorder){
     const vs=cv.captureStream(30);
     const stream=new MediaStream([...vs.getVideoTracks(),...dest.stream.getAudioTracks()]);
@@ -1172,7 +1329,7 @@ async function startRun(){
       rec.onstop=()=>finishRec(r,mt);rec.start(250);run.rec=rec;
     }catch(e){setStatus("Recording not supported here, playing only.")}
   }
-  $("stop").disabled=false;setStatus("Racing…"+(tl.msg||""));
+  $("stop").disabled=false;setStatus("Racing…"+(tl.msg||"")+(Math.abs(lastCal)>=.015?` Timing auto-adjusted ${lastCal>0?"+":""}${Math.round(lastCal*1000)} ms.`:""));
   const loop=()=>{
     if(!run)return;const t=actx.currentTime-run.t0;
     if(t<0){frame(0);run.raf=requestAnimationFrame(loop);return}

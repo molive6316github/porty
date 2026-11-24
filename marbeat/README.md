@@ -31,3 +31,13 @@ block loading model files from `file://`.
 Each word is synthesized in a character's speaker voice, time-stretched (WSOLA) to fit its slot, retuned to the
 song's melody, given light vibrato on held notes, then run through the character effect. Only the words a marble
 actually sings (while it leads) are synthesized. "Robot voices" (eSpeak) remains as a light fallback.
+
+## Voice cloning (Pocket TTS, fully local)
+`marbeat/ai/clone/` runs Kyutai's Pocket TTS (100M parameters, zero-shot voice cloning) in a Web Worker:
+- `worker.js`: adapted from [KevinAHM/pocket-tts-web](https://huggingface.co/spaces/KevinAHM/pocket-tts-web) (Apache-2.0, see `CODE-LICENSE`).
+  Changes: ONNX runtime loaded locally (no CDN), no bundled voices, several named cloned voices at once.
+- `onnx/english_2026-04/`: INT8 ONNX export of [kyutai/pocket-tts](https://huggingface.co/kyutai/pocket-tts)
+  by [KevinAHM](https://huggingface.co/KevinAHM/pocket-tts-onnx). Model licensed **CC-BY-4.0**; credit: Kyutai (model), KevinAHM (ONNX export).
+- `sentencepiece.js` (tokenizer), `ort.min.mjs` + `ort-wasm-simd-threaded.*` (onnxruntime-web 1.20, MIT).
+
+Only clone voices you have the right to use. Quality varies with the sample: use clear, dry speech, 5-15 s.
