@@ -134,12 +134,14 @@ textarea{width:100%;min-height:84px;background:#0e0e17;border:1px solid var(--li
         <label>Voice engine</label>
         <select id="engine"><option value="sing">Sing lyrics (synthesized voices)</option><option value="remix">Remix the song (pitch-shifted)</option></select>
         <label>Lyric sync</label>
-        <select id="syncmode"><option value="phrase">Auto: follow the singing (phrases)</option><option value="hits">Auto: one syllable per vocal hit</option><option value="beat">On the beat</option><option value="even">Even spread</option><option value="tap">Tapped by you (manual)</option></select>
+        <select id="syncmode"><option value="phrase">Auto: follow the singing (phrases)</option><option value="ai">AI: listen to the singing (Whisper)</option><option value="hits">Auto: one syllable per vocal hit</option><option value="beat">On the beat</option><option value="even">Even spread</option><option value="tap">Tapped by you (manual)</option></select>
         <label>Lyrics (new line = new phrase). The lead marble sings them.</label>
         <textarea id="lyrics">Who is the best marble in the world tonight
 We are rolling down the hill and nobody can stop us now
 So cheer for your favourite one and watch them go go go</textarea>
-        <div class="row" style="margin-top:8px"><button class="btn ghost sm" id="prevSync">▶ Preview sync</button><button class="btn ghost sm" id="tapSync">👆 Tap to sync</button></div>
+        <div class="row" style="margin-top:8px"><button class="btn ghost sm" id="prevSync">▶ Preview sync</button><button class="btn ghost sm" id="tapSync">👆 Tap to sync</button><button class="btn ghost sm" id="aiSync">🤖 AI sync</button></div>
+        <label>AI model (English; downloads once, then cached by your browser)</label>
+        <select id="asrModel"><option value="Xenova/whisper-base.en">Better: base (~80 MB)</option><option value="Xenova/whisper-tiny.en">Faster: tiny (~40 MB)</option></select>
         <label class="chk"><input type="checkbox" id="loop"> Repeat lyrics (only if they're shorter than the section)</label>
         <label>Nudge: <span id="syncLbl">0.00</span>s (negative = earlier, positive = later)</label>
         <input type="range" id="syncoff" min="-0.6" max="0.6" step="0.02" value="0" oninput="document.getElementById('syncLbl').textContent=(+this.value).toFixed(2)">
@@ -669,7 +671,7 @@ function vocalAnalysis(s,len){
 }
 function vocalOnsets(s,len){return vocalAnalysis(s,len).onsets}
 
-let tapSlots=null;
+let tapSlots=null,aiSlots=null,aiKey="";
 function finishSlots(slots,len){
   const out=[];
   for(let i=0;i<slots.length;i++){
@@ -683,6 +685,10 @@ function finishSlots(slots,len){
 function computeSlots(beats,len,text,mode,s,off,loop){
   const lines=text.split(/\n+/).map(l=>l.split(/\s+/).filter(Boolean)).filter(l=>l.length);
   if(!lines.length)return null;
+  if(mode==="ai"){
+    if(!aiSlots||aiKey!==`${songId}|${s}|${len}|${hashStr(text)}`)return null;
+    return finishSlots(aiSlots.map(x=>({t0:x.t0+off,text:x.text})),len);
+  }
   if(mode==="tap"){
     if(!tapSlots||!tapSlots.length)return null;
     return finishSlots(tapSlots.map(x=>({t0:x.t0+off,text:x.text})),len);
@@ -790,6 +796,115 @@ async function voiceBuffer(m,s,len,vc){
   const buf=actx.createBuffer(1,out.length,sr);buf.copyToChannel(out,0);voiceCache.set(key,buf);await sleep();return buf;
 }
 
+// ================= AI SYNC: Whisper listens, we align the lyrics to what it heard =================
+const asrCache={};let asrPipe=null,asrModelLoaded="";
+const normW=w=>w.toLowerCase().replace(/[^a-z0-9]/g,"");
+function lev(a,b){
+  const m=a.length,n=b.length;if(!m)return n;if(!n)return m;
+  let prev=Array.from({length:n+1},(_,j)=>j);
+  for(let i=1;i<=m;i++){const cur=[i];for(let j=1;j<=n;j++)cur[j]=Math.min(prev[j]+1,cur[j-1]+1,prev[j-1]+(a[i-1]===b[j-1]?0:1));prev=cur}
+  return prev[n];
+}
+function wsim(a,b){if(!a||!b)return 0;if(a===b)return 1;return 1-lev(a,b)/Math.max(a.length,b.length)}
+// Semi-global alignment (Needleman-Wunsch with free leading/trailing gaps) of lyric words to recognised words.
+function alignLyricsToASR(words,chunks,len){
+  const A=words.map(normW),B=chunks.map(c=>normW(c.text)),n=A.length,m=B.length;
+  if(!n||!m)return null;
+  const GAP=-.6,MIS=-1,TH=.6;
+  const sc=Array.from({length:n+1},()=>new Float32Array(m+1)),tb=Array.from({length:n+1},()=>new Uint8Array(m+1));
+  for(let i=1;i<=n;i++)tb[i][0]=1;for(let j=1;j<=m;j++)tb[0][j]=2;
+  for(let i=1;i<=n;i++)for(let j=1;j<=m;j++){
+    const sm=wsim(A[i-1],B[j-1]),d=sc[i-1][j-1]+(sm>=TH?2*sm:MIS),u=sc[i-1][j]+GAP,l=sc[i][j-1]+GAP;
+    if(d>=u&&d>=l){sc[i][j]=d;tb[i][j]=0}else if(u>=l){sc[i][j]=u;tb[i][j]=1}else{sc[i][j]=l;tb[i][j]=2}
+  }
+  let bi=n,bj=m,best=sc[n][m];
+  for(let j=1;j<=m;j++)if(sc[n][j]>best){best=sc[n][j];bi=n;bj=j}
+  for(let i=1;i<=n;i++)if(sc[i][m]>best){best=sc[i][m];bi=i;bj=m}
+  const pairs=[];let i=bi,j=bj;
+  while(i>0&&j>0){
+    const t=tb[i][j];
+    if(t===0){if(wsim(A[i-1],B[j-1])>=TH)pairs.push([i-1,j-1]);i--;j--}else if(t===1)i--;else j--;
+  }
+  pairs.reverse();
+  const anchors=[];let lastT=-1;
+  for(const [wi,cj] of pairs){const t=chunks[cj].t0;if(typeof t==="number"&&t>=lastT){anchors.push({i:wi,t});lastT=t}}
+  if(anchors.length<Math.max(3,Math.ceil(n*.15)))return null;
+  const sy=words.map(w=>syllables(w)),cum=[0];for(let k=0;k<n;k++)cum.push(cum[k]+sy[k]);
+  const a0=anchors[0],a1=anchors[anchors.length-1];
+  const rate=Math.max(.15,Math.min(.8,(a1.t-a0.t)/Math.max(1,cum[a1.i]-cum[a0.i])));
+  const T=new Array(n).fill(null);
+  anchors.forEach(a=>T[a.i]=a.t);
+  for(let k=0;k<anchors.length-1;k++){ // interpolate by syllables between anchors
+    const x=anchors[k],y=anchors[k+1];
+    for(let w=x.i+1;w<y.i;w++)T[w]=x.t+(y.t-x.t)*((cum[w]-cum[x.i])/Math.max(1,cum[y.i]-cum[x.i]));
+  }
+  for(let w=a0.i-1;w>=0;w--)T[w]=Math.max(.05,a0.t-rate*(cum[a0.i]-cum[w]));
+  for(let w=a1.i+1;w<n;w++)T[w]=a1.t+rate*(cum[w]-cum[a1.i]);
+  const slots=[];for(let w=0;w<n;w++)if(T[w]!==null&&T[w]<len-.25)slots.push({t0:T[w],text:words[w]});
+  return{slots,matched:anchors.length};
+}
+async function segment16k(s0,len){
+  const src=songBuf,sr=src.sampleRate,a=Math.floor(s0*sr),N=Math.floor(len*sr);
+  const L=src.getChannelData(0),R=src.numberOfChannels>1?src.getChannelData(1):L,mono=new Float32Array(N);
+  for(let i=0;i<N;i++)mono[i]=((L[a+i]||0)+(R[a+i]||0))/2; // centre channel: keeps the vocals, tames wide instruments
+  const b=actx.createBuffer(1,N,sr);b.copyToChannel(mono,0);
+  const oc=new OfflineAudioContext(1,Math.ceil(len*16000),16000),so=oc.createBufferSource();so.buffer=b;so.connect(oc.destination);so.start();
+  return (await oc.startRendering()).getChannelData(0);
+}
+async function loadASR(model){
+  if(asrPipe&&asrModelLoaded===model)return asrPipe;
+  setStatus("Loading AI library…");
+  const T=await import("https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2");
+  T.env.allowLocalModels=false;
+  asrPipe=await T.pipeline("automatic-speech-recognition",model,{progress_callback:p=>{
+    if(p.status==="progress")setStatus(`Downloading AI model… ${Math.round(p.progress)}% (first time only)`);
+    else if(p.status==="ready")setStatus("AI model ready.")}});
+  asrModelLoaded=model;return asrPipe;
+}
+function aiKeyNow(){
+  const len=Math.min(+$("len").value,songBuf.duration);
+  return `${songId}|${+$("start").value}|${len}|${hashStr($("lyrics").value.trim())}`;
+}
+async function runAI(){
+  if(!songBuf){setStatus("Load a song first.");return false}
+  ensureCtx();
+  const text=$("lyrics").value.trim(),words=text.split(/\s+/).filter(Boolean);
+  if(!words.length){setStatus("Add some lyrics first.");return false}
+  const len=Math.min(+$("len").value,songBuf.duration),s0=+$("start").value,model=$("asrModel").value;
+  try{
+    const ck=`${songId}|${s0}|${len}|${model}`;let chunks=asrCache[ck];
+    if(!chunks){
+      setStatus("Preparing audio…");await sleep();
+      const audio=await segment16k(s0,len);
+      if(window.__mockASR)chunks=await window.__mockASR(audio,len);
+      else{
+        const pipe=await loadASR(model);
+        setStatus("AI is listening to the singing… (can take a minute)");await sleep();
+        const out=await pipe(audio,{return_timestamps:"word",chunk_length_s:30,stride_length_s:5});
+        chunks=(out.chunks||[]).filter(c=>c.timestamp&&typeof c.timestamp[0]==="number").map(c=>({text:c.text,t0:c.timestamp[0],t1:c.timestamp[1]}));
+      }
+      asrCache[ck]=chunks;
+    }
+    const res=alignLyricsToASR(words,chunks,len);
+    if(!res){
+      setStatus(`AI heard ${chunks.length} word${chunks.length===1?"":"s"} but couldn't match them to your lyrics. Check the section and lyrics, or use phrase mode / Tap to sync. Using phrase mode.`);
+      $("syncmode").value="phrase";return false;
+    }
+    aiSlots=res.slots;aiKey=aiKeyNow();$("syncmode").value="ai";
+    setStatus(`AI sync: matched ${res.matched} of ${words.length} words (the rest are placed between them). Hit Preview sync to check.`);
+    return true;
+  }catch(e){
+    setStatus("AI sync failed: "+(e&&e.message||e)+". It needs internet access to cdn.jsdelivr.net and huggingface.co. Using phrase mode instead.");
+    $("syncmode").value="phrase";return false;
+  }
+}
+async function ensureAI(){
+  if($("syncmode").value!=="ai")return;
+  if(aiSlots&&aiKey===aiKeyNow())return;
+  await runAI();
+}
+$("aiSync").onclick=async()=>{$("go").disabled=true;try{await runAI()}finally{$("go").disabled=!songBuf}};
+
 // ================= SYNC TOOLS: tap to sync + preview =================
 let aux=null; // {kind:'tap'|'prev', src, t0, len, raf, ...}
 function stopAux(silent){
@@ -835,9 +950,10 @@ function finishTap(){
   if(n>=2){tapSlots=a.words.slice(0,n).map((w,i)=>({t0:a.times[i],text:w}));$("syncmode").value="tap";setStatus(`Tap sync saved: ${n} words. Sync mode switched to "Tapped". Hit Preview sync to check it.`)}
   else setStatus("Not enough taps, nothing saved.");
 }
-function previewSync(){
+async function previewSync(){
   if(!songBuf){setStatus("Load a song first.");return}
   ensureCtx();stopRun(true);stopAux(true);
+  await ensureAI();
   const len=Math.min(+$("len").value,songBuf.duration),s0=+$("start").value;
   const beats=beatsAll.filter(t=>t>=s0&&t<s0+len).map(t=>t-s0);
   const slots=computeSlots(beats,len,$("lyrics").value.trim(),$("syncmode").value,s0,+$("syncoff").value,$("loop").checked);
@@ -873,8 +989,9 @@ async function startRun(){
   const engine=$("engine").value,text=$("lyrics").value.trim();
   const vc={engine,text,melody:$("melody").checked,slots:null,offs:null,backing:null};
   if(engine==="sing"){
+    await ensureAI();
     vc.slots=computeSlots(beats,len,text,$("syncmode").value,s,+$("syncoff").value,$("loop").checked);
-    if(!vc.slots){setStatus($("syncmode").value==="tap"?"Tap to sync first (or pick another sync mode).":"Add some lyrics first.");$("go").disabled=false;return}
+    if(!vc.slots){setStatus($("syncmode").value==="tap"?"Tap to sync first (or pick another sync mode).":$("syncmode").value==="ai"?"Run AI sync first.":"Add some lyrics first.");$("go").disabled=false;return}
     setStatus("Syncing lyrics to the song…");await sleep();
     vc.offs=vc.melody?melodyOffsets(s,len,vc.slots):vc.slots.map(()=>0);
     vc.slotHash=hashStr(vc.slots.map(x=>x.t0.toFixed(2)+x.text).join("|"));
