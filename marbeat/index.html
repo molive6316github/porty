@@ -191,6 +191,12 @@ So cheer for your favourite one and watch them go go go</textarea>
 <script>
 "use strict";
 const $=id=>document.getElementById(id);
+function appBaseFrom(href){
+  const u=new URL(href);u.hash="";u.search="";let p=u.pathname;
+  if(!p.endsWith("/")){const last=p.split("/").pop();p=last.includes(".")?p.slice(0,p.lastIndexOf("/")+1):p+"/"}
+  u.pathname=p;return u.href;
+}
+const APP_BASE=appBaseFrom(location.href); // folder this page lives in, even when opened as /marbeat (no slash)
 const W=540,H=960,SC=720/540,FPS=60;
 const COLORS=["#ff4d8d","#ffb02e","#3ddc97","#4da3ff","#b06cff","#ff6b4a","#22d3ee","#e5e84a"];
 const NAMES=["Poppy","Milo","Ziggy","Juno","Rex","Bea","Otto","Luna"];
@@ -862,7 +868,7 @@ const rawIds=new Map(),lsCache=new Map(); // word -> phoneme ids; "sid|word|ls" 
 async function getPiper(){
   if(piperP)return piperP;
   piperP=(async()=>{
-    const base=new URL("ai/piper/",location.href).href;
+    const base=APP_BASE+"ai/piper/";
     const {createPiper}=await import(base+"piper.js");
     return await createPiper(base,(got,total)=>setStatus(`Loading neural voices… ${total?Math.round(got/total*100)+"%":(got/1e6).toFixed(0)+" MB"} (first time only)`));
   })();
@@ -997,7 +1003,7 @@ const cloneRaw=new Map(); // "name|word" -> {x,sr:24000}
 function getCloneWorker(){
   if(cloneReadyP)return cloneReadyP;
   cloneReadyP=new Promise((resolve,reject)=>{
-    const w=new Worker(new URL("ai/clone/worker.js",location.href).href);cloneW=w;
+    const w=new Worker(APP_BASE+"ai/clone/worker.js");cloneW=w;
     w.onerror=e=>{cloneReadyP=null;reject(new Error("could not start the cloning engine ("+(e.message||"load error")+")"))};
     w.onmessage=ev=>{
       const m=ev.data;
@@ -1133,7 +1139,7 @@ async function loadASR(model){
   if(asrPipe&&asrModelLoaded===model)return asrPipe;
   setStatus("Loading AI library…");
   // everything is served from this site's own /ai folder, so no CDN or Hugging Face is needed
-  const base=new URL("ai/",location.href).href;
+  const base=APP_BASE+"ai/";
   const T=await import(base+"transformers.min.js");
   T.env.allowRemoteModels=false;T.env.allowLocalModels=true;T.env.localModelPath=base+"models/";
   T.env.backends.onnx.wasm.wasmPaths=base;T.env.backends.onnx.wasm.numThreads=1;
