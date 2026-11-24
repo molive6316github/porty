@@ -68,7 +68,7 @@ footer{text-align:center;color:var(--mut);font-size:13px;padding:40px 20px;borde
   <h2>How it works</h2><p class="sub">Beats first, physics second.</p>
   <div class="grid3">
     <div class="card"><div class="n">01</div><h3>Feed it a song</h3><p>Upload any audio file, then pick a 15, 30 or 60 second slice on the waveform. Beats are detected automatically.</p></div>
-    <div class="card"><div class="n">02</div><h3>Name your marbles</h3><p>2–8 marbles, each with a name, colour and a "voice": a sound treatment, or its own audio file (e.g. a different cover).</p></div>
+    <div class="card"><div class="n">02</div><h3>Name your marbles</h3><p>2–8 marbles, each with a name, colour and a fake character voice (or its own audio file, e.g. a different cover).</p></div>
     <div class="card"><div class="n">03</div><h3>Record &amp; post</h3><p>Hit Race. The lead marble's voice plays, handoffs land on overtakes. Record it and download the video.</p></div>
   </div>
 </section>
@@ -125,7 +125,7 @@ footer{text-align:center;color:var(--mut);font-size:13px;padding:40px 20px;borde
 <section id="formats">
   <h2>Formats</h2><p class="sub">What's built and what's next.</p>
   <div class="formats">
-    <div class="card"><h3>Marble Race<span class="tag">Live</span></h3><p>Marbles lap a track. Leader sings.</p></div>
+    <div class="card"><h3>Marble Race<span class="tag">Live</span></h3><p>Real physics: marbles tumble down ramps, pegs, funnels and spinners. Whoever's in front sings.</p></div>
     <div class="card"><h3>Musical Path<span class="tag">Live</span></h3><p>A ball bounces down a corridor on the beat; voices hand off on every hit.</p></div>
     <div class="card"><h3>Marble Drop<span class="tag soon">Soon</span></h3><p>A marble falls through the song, every hit is a note.</p></div>
     <div class="card"><h3>Bounce Battle<span class="tag soon">Soon</span></h3><p>Two fighters, one mic.</p></div>
@@ -135,7 +135,7 @@ footer{text-align:center;color:var(--mut);font-size:13px;padding:40px 20px;borde
 <section id="faq">
   <h2>FAQ</h2><p class="sub"></p>
   <details><summary>Is the outcome random?</summary><p>It's seeded. Same seed + same song = same race, so what you preview is what you record. Pick a winner to rig it, or reroll the seed.</p></details>
-  <details><summary>What's a "voice"?</summary><p>Either a sound treatment on the main song (telephone, muffled, bright, bass, radio) or an audio file you attach to that marble, like different AI covers of the same song. Files should line up with the main song's timing.</p></details>
+  <details><summary>What's a "voice"?</summary><p>A fake character voice: your song gets pitch-shifted and mangled per marble (chipmunk, deep, robot, alien, monster…) so the handoffs are obvious. It's not real AI singing. If you have actual covers, attach one per marble instead and those play when that marble leads (they should line up with the main song's timing).</p></details>
   <details><summary>Does it upload my music?</summary><p>No. Decoding, beat detection and recording all happen locally.</p></details>
   <details><summary>Music rights?</summary><p>Use audio you have the right to use. That's on you.</p></details>
   <details><summary>Video format?</summary><p>Whatever your browser's recorder supports: MP4 in recent Chrome/Safari, otherwise WebM.</p></details>
@@ -149,36 +149,38 @@ const $=id=>document.getElementById(id);
 const W=540,H=960,SC=720/540,FPS=60;
 const COLORS=["#ff4d8d","#ffb02e","#3ddc97","#4da3ff","#b06cff","#ff6b4a","#22d3ee","#e5e84a"];
 const NAMES=["Poppy","Milo","Ziggy","Juno","Rex","Bea","Otto","Luna"];
-const PRESETS={normal:"Normal",tele:"Telephone",muffled:"Muffled",bright:"Bright",bass:"Bass boost",radio:"Radio"};
-const PKEYS=Object.keys(PRESETS);
+const VOICES={orig:"Original",chip:"Chipmunk",deep:"Deep Dude",robot:"Robot",alien:"Alien",monster:"Monster",squeak:"Squeaky",muffle:"Muffled"};
+const VKEYS=Object.keys(VOICES);
 
-let actx=null,songBuf=null,peaks=null,beatsAll=[],marbles=[];
-let run=null; // active run state
+let actx=null,songBuf=null,peaks=null,beatsAll=[],marbles=[],songId=0;
+let run=null,lastRun=null,idleCourse=null,idleKey="";
+const voiceCache=new Map();
+const sleep=()=>new Promise(r=>setTimeout(r,0));
 
 // ---------- setup UI ----------
 const countSel=$("count");
-for(let i=2;i<=8;i++){countSel.add(new Option(i,i))}
+for(let i=2;i<=8;i++)countSel.add(new Option(i,i));
 countSel.value=4;
 function initMarbles(){
   const n=+countSel.value;
-  while(marbles.length<n){const i=marbles.length;marbles.push({name:NAMES[i],color:COLORS[i],preset:PKEYS[i%PKEYS.length],buf:null,fname:""})}
+  while(marbles.length<n){const i=marbles.length;marbles.push({name:NAMES[i],color:COLORS[i],preset:VKEYS[i%VKEYS.length],buf:null,fname:""})}
   marbles.length=n;
   const box=$("marbles");box.innerHTML="";
-  marbles.forEach((m,i)=>{
+  marbles.forEach(m=>{
     const d=document.createElement("div");d.className="marble";
-    d.innerHTML=`<input type="color" value="${m.color}"><input type="text" value="${m.name}" maxlength="14"><select>${PKEYS.map(k=>`<option value="${k}" ${k===m.preset?"selected":""}>${PRESETS[k]}</option>`).join("")}</select><input class="file" type="file" accept="audio/*" title="Optional: own audio for this marble">`;
+    d.innerHTML=`<input type="color" value="${m.color}"><input type="text" value="${m.name}" maxlength="14"><select>${VKEYS.map(k=>`<option value="${k}" ${k===m.preset?"selected":""}>${VOICES[k]}</option>`).join("")}</select><input class="file" type="file" accept="audio/*" title="Optional: own audio for this marble">`;
     const [c,t,s,f]=d.children;
-    c.oninput=()=>{m.color=c.value;draw(0)};
-    t.oninput=()=>{m.name=t.value||"?";fillWinner();draw(0)};
+    c.oninput=()=>{m.color=c.value;idleDraw()};
+    t.oninput=()=>{m.name=t.value||"?";fillWinner();idleDraw()};
     s.onchange=()=>{m.preset=s.value};
-    f.onchange=async()=>{if(!f.files[0])return;ensureCtx();try{m.buf=await actx.decodeAudioData(await f.files[0].arrayBuffer());m.fname=f.files[0].name;setStatus(`Voice file loaded for ${m.name}.`)}catch(e){setStatus("Couldn't decode that file.")}};
+    f.onchange=async()=>{if(!f.files[0])return;ensureCtx();try{m.buf=await actx.decodeAudioData(await f.files[0].arrayBuffer());m.fname=f.files[0].name;m.bufId=Math.random();setStatus(`Voice file loaded for ${m.name}.`)}catch(e){setStatus("Couldn't decode that file.")}};
     box.appendChild(d);
   });
-  fillWinner();draw(0);
+  fillWinner();idleDraw();
 }
 function fillWinner(){const w=$("winner"),v=w.value;w.innerHTML="";w.add(new Option("Random","-1"));marbles.forEach((m,i)=>w.add(new Option(m.name,i)));if([...w.options].some(o=>o.value===v))w.value=v}
 countSel.onchange=initMarbles;
-$("reroll").onclick=()=>{$("seed").value=Math.floor(Math.random()*99999);draw(0)};
+$("reroll").onclick=()=>{$("seed").value=Math.floor(Math.random()*99999);idleDraw()};
 function setStatus(s){$("status").textContent=s}
 function ensureCtx(){if(!actx)actx=new (window.AudioContext||window.webkitAudioContext)();if(actx.state==="suspended")actx.resume()}
 
@@ -186,10 +188,11 @@ function ensureCtx(){if(!actx)actx=new (window.AudioContext||window.webkitAudioC
 $("song").onchange=async e=>{
   const f=e.target.files[0];if(!f)return;ensureCtx();setStatus("Decoding…");
   try{songBuf=await actx.decodeAudioData(await f.arrayBuffer())}catch(err){setStatus("Couldn't decode that file.");return}
+  songId++;voiceCache.clear();
   const ch=songBuf.getChannelData(0),N=600,step=Math.floor(ch.length/N);peaks=new Float32Array(N);
   for(let i=0;i<N;i++){let m=0;for(let j=0;j<step;j+=16){const v=Math.abs(ch[i*step+j]);if(v>m)m=v}peaks[i]=m}
   beatsAll=detectBeats(ch,songBuf.sampleRate);
-  const st=$("start");st.disabled=false;updateRange();
+  $("start").disabled=false;updateRange();
   $("go").disabled=false;setStatus(`Loaded ${songBuf.duration.toFixed(1)}s · ${beatsAll.length} beats detected.`);
 };
 function detectBeats(ch,sr){
@@ -209,55 +212,151 @@ function updateRange(){
   const len=Math.min(+$("len").value,songBuf.duration),st=$("start");
   st.max=Math.max(0,songBuf.duration-len).toFixed(1);if(+st.value>+st.max)st.value=st.max;
   $("startLbl").textContent=(+st.value).toFixed(1);
-  const bs=beatsAll.filter(t=>t>=+st.value&&t<+st.value+len).length;$("beats").value=bs;
-  drawWave();
+  $("beats").value=beatsAll.filter(t=>t>=+st.value&&t<+st.value+len).length;
+  drawWave();idleDraw();
 }
 $("start").oninput=updateRange;$("len").onchange=updateRange;
 function drawWave(){
-  const c=$("wave"),g=c.getContext("2d"),w=c.width,h=c.height;g.clearRect(0,0,w,h);
+  const c=$("wave"),g2=c.getContext("2d"),w=c.width,h=c.height;g2.clearRect(0,0,w,h);
   if(!peaks)return;
   const len=Math.min(+$("len").value,songBuf.duration),s=+$("start").value,d=songBuf.duration;
-  g.fillStyle="#2a2a44";peaks.forEach((p,i)=>{const x=i/peaks.length*w,ph=p*h*.9;g.fillRect(x,(h-ph)/2,w/peaks.length+.5,ph)});
-  g.fillStyle="#ff4d8d33";g.fillRect(s/d*w,0,len/d*w,h);
-  g.strokeStyle="#ff4d8d";g.strokeRect(s/d*w,.5,len/d*w,h-1);
+  g2.fillStyle="#2a2a44";peaks.forEach((p,i)=>{const x=i/peaks.length*w,ph=p*h*.9;g2.fillRect(x,(h-ph)/2,w/peaks.length+.5,ph)});
+  g2.fillStyle="#ff4d8d33";g2.fillRect(s/d*w,0,len/d*w,h);
+  g2.strokeStyle="#ff4d8d";g2.strokeRect(s/d*w,.5,len/d*w,h-1);
 }
 $("wave").onclick=e=>{if(!songBuf)return;const r=e.target.getBoundingClientRect(),len=Math.min(+$("len").value,songBuf.duration);
   const t=(e.clientX-r.left)/r.width*songBuf.duration-len/2;$("start").value=Math.max(0,Math.min(+$("start").max,t)).toFixed(1);updateRange()};
 
-// ---------- seeded rng + timeline ----------
+// ---------- rng ----------
 function rng(seed){let a=(seed>>>0)||1;return()=>{a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
 function hashSeed(s){let h=2166136261;for(const ch of String(s)){h^=ch.charCodeAt(0);h=Math.imul(h,16777619)}return h>>>0}
 
-// Race timeline: progress[i][frame] in laps, scaled so the winner ends at LAPS
-const LAPS=3;
-function buildRace(dur,beats,n,riggedIdx){
-  const R=rng(hashSeed($("seed").value)),F=Math.ceil(dur*FPS);
-  const prog=[...Array(n)].map(()=>new Float32Array(F+1));
-  const base=[...Array(n)].map(()=>1+(R()-.5)*.12),wob=[...Array(n)].map(()=>R()*6.28),wf=[...Array(n)].map(()=>.3+R()*.5);
-  const boost=new Float32Array(n);
-  let bi=0;
-  for(let f=1;f<=F;f++){
+// ================= MARBLE PHYSICS =================
+const RAD=13,GRAV=1000,BAND=120,PAD=45;
+function buildCourse(Hc,seedStr){
+  const R=rng(hashSeed(seedStr+"|course")),segs=[],spins=[];
+  const seg=(x1,y1,x2,y2,r,e,k)=>segs.push({x1,y1,x2,y2,r,e,k});
+  let y=230;
+  while(y<Hc-150){
+    const t=Math.floor(R()*5);
+    if(t===0){ // zigzag ramps
+      const cnt=3+Math.floor(R()*3);let side=R()<.5?0:1;
+      for(let i=0;i<cnt;i++){const gap=62+R()*14,drop=75+R()*35;
+        if(side===0)seg(0,y,W-gap,y+drop,5,.35,"ramp");else seg(W,y,gap,y+drop,5,.35,"ramp");
+        side^=1;y+=125}
+      y+=50;
+    }else if(t===1){ // peg field
+      const rows=5+Math.floor(R()*3);
+      for(let r=0;r<rows;r++){for(let x=30+(r%2)*30;x<W-15;x+=60)seg(x,y,x,y,7,.5,"peg");y+=52}
+      y+=60;
+    }else if(t===2){ // funnel
+      const gap=56+R()*20;
+      seg(0,y,W/2-gap/2,y+110,5,.3,"ramp");seg(W,y,W/2+gap/2,y+110,5,.3,"ramp");
+      y+=110;seg(W/2-70,y+80,W/2-70,y+80,12,.7,"bump");seg(W/2+70,y+80,W/2+70,y+80,12,.7,"bump");y+=200;
+    }else if(t===3){ // spinners
+      const dir=R()<.5?1:-1;
+      spins.push({cx:W*.27,cy:y+70,len:92,w:2.3*dir,ph:R()*6.28,r:6});
+      spins.push({cx:W*.73,cy:y+70,len:92,w:-2.3*dir,ph:R()*6.28,r:6});
+      spins.push({cx:W*.5,cy:y+190,len:100,w:1.9*dir,ph:R()*6.28,r:6});
+      y+=300;
+    }else{ // bumpers
+      const cnt=4+Math.floor(R()*2);
+      for(let i=0;i<cnt;i++)seg(55+R()*(W-110),y+i*68,55+R()*(W-110),y+i*68,22,.92,"bump");
+      y+=cnt*68+40;
+    }
+    y+=50;
+  }
+  const finishY=y+60,floorY=finishY+170;
+  seg(0,floorY,W,floorY,6,.2,"ramp");
+  // band index (static)
+  const bands=[];for(let i=0;i<=Math.ceil(floorY/BAND)+2;i++)bands.push([]);
+  segs.forEach((s,i)=>{
+    const lo=Math.floor((Math.min(s.y1,s.y2)-s.r-PAD)/BAND),hi=Math.floor((Math.max(s.y1,s.y2)+s.r+PAD)/BAND);
+    for(let b=Math.max(0,lo);b<=Math.min(bands.length-1,hi);b++)bands[b].push(i);
+  });
+  return{segs,spins,bands,finishY,floorY,Hc};
+}
+function hitSeg(m,x1,y1,x2,y2,r,e){
+  const dx=x2-x1,dy=y2-y1,l2=dx*dx+dy*dy;let u=l2?((m.x-x1)*dx+(m.y-y1)*dy)/l2:0;u=u<0?0:u>1?1:u;
+  const cx=x1+dx*u,cy=y1+dy*u;let nx=m.x-cx,ny=m.y-cy;const rr=RAD+r,d2=nx*nx+ny*ny;
+  if(d2>=rr*rr)return;
+  const d=Math.sqrt(d2);if(d<1e-6){nx=0;ny=-1}else{nx/=d;ny/=d}
+  m.x=cx+nx*rr;m.y=cy+ny*rr;
+  const vn=m.vx*nx+m.vy*ny;
+  if(vn<0){m.vx-=(1+e)*vn*nx;m.vy-=(1+e)*vn*ny;m.vx*=.998}
+}
+function simulate(course,n,beats,nudgeSeed,seedStr,maxT){
+  const R0=rng(hashSeed(seedStr+"|start")),Rn=rng(nudgeSeed>>>0),{segs,spins,bands,finishY}=course;
+  const ms=[];
+  for(let i=0;i<n;i++){const row=i%2,col=Math.floor(i/2),per=Math.ceil(n/2);
+    ms.push({x:70+(W-140)*((col+(row?.5:0)+R0()*.2)/Math.max(1,per-.5)),y:50+row*36,vx:(R0()-.5)*30,vy:0,fin:-1,still:0})}
+  const maxF=Math.ceil(maxT*FPS)+1,pos=new Float32Array(maxF*n*2),lead=new Int8Array(maxF),cam=new Float32Array(maxF);
+  let f=0,bi=0,camY=300,winner=-1,done=0,endF=-1;
+  const DT=1/120;
+  for(;f<maxF;f++){
     const t=f/FPS;
-    while(bi<beats.length&&beats[bi]<=t){const k=Math.floor(R()*n);boost[k]+=1.6+R()*1.4;if(R()<.35){boost[Math.floor(R()*n)]-=.8}bi++}
-    for(let i=0;i<n;i++){
-      const v=Math.max(.15,base[i]+.35*Math.sin(wob[i]+t*wf[i])+boost[i]);
-      boost[i]*=Math.pow(.5,1/(FPS*.35));
-      prog[i][f]=prog[i][f-1]+v/FPS;
+    for(let i=0;i<n;i++){pos[(f*n+i)*2]=ms[i].x;pos[(f*n+i)*2+1]=ms[i].y}
+    // leader + camera
+    let L=0,best=-1e18;
+    for(let i=0;i<n;i++){const sc=ms[i].fin>=0?1e9-ms[i].fin:ms[i].y;if(sc>best){best=sc;L=i}}
+    lead[f]=L;
+    const ly=Math.max(...ms.map(m=>m.y));camY+=(Math.min(ly,finishY-80)-camY)*.1;cam[f]=camY;
+    if(done===n&&endF<0)endF=f+FPS;
+    if(endF>=0&&f>=endF){f++;break}
+    // beat kicks
+    while(bi<beats.length&&beats[bi]<=t){const m=ms[Math.floor(Rn()*n)];m.vx+=(Rn()-.5)*300;m.vy-=40*Rn();bi++}
+    for(let s=0;s<2;s++){
+      const st=t+s*DT;
+      for(const m of ms){
+        m.vy+=GRAV*DT;const sp=Math.hypot(m.vx,m.vy);if(sp>1300){m.vx*=1300/sp;m.vy*=1300/sp}
+        m.x+=m.vx*DT;m.y+=m.vy*DT;
+        if(m.x<RAD){m.x=RAD;m.vx=Math.abs(m.vx)*.5}else if(m.x>W-RAD){m.x=W-RAD;m.vx=-Math.abs(m.vx)*.5}
+        const bl=bands[Math.max(0,Math.min(bands.length-1,Math.floor(m.y/BAND)))];
+        for(let k=0;k<bl.length;k++){const sg=segs[bl[k]];hitSeg(m,sg.x1,sg.y1,sg.x2,sg.y2,sg.r,sg.e)}
+        for(const sp2 of spins){if(Math.abs(m.y-sp2.cy)<sp2.len+30){const a=sp2.ph+sp2.w*st,c=Math.cos(a)*sp2.len,sn=Math.sin(a)*sp2.len;
+          const px=m.x,py=m.y;hitSeg(m,sp2.cx-c,sp2.cy-sn,sp2.cx+c,sp2.cy+sn,sp2.r,.5);
+          if(m.x!==px||m.y!==py){ // spin kick: add tangential push
+            const rx=m.x-sp2.cx,ry=m.y-sp2.cy;m.vx+=-ry*sp2.w*.35*DT*60*.1;m.vy+=rx*sp2.w*.35*DT*60*.1}}}
+        // stuck guard
+        if(Math.hypot(m.vx,m.vy)<12&&m.y<finishY){m.still++;if(m.still>200){m.vx+=(Rn()-.5)*320;m.vy-=100;m.still=0}}else m.still=0;
+        if(m.fin<0&&m.y>finishY){m.fin=st;done++;if(winner<0)winner=ms.indexOf(m)}
+      }
+      for(let i=0;i<n;i++)for(let j=i+1;j<n;j++){
+        const a=ms[i],b=ms[j];let dx=b.x-a.x,dy=b.y-a.y;const d2=dx*dx+dy*dy,rr=RAD*2;
+        if(d2<rr*rr&&d2>1e-9){const d=Math.sqrt(d2);dx/=d;dy/=d;const ov=(rr-d)/2;
+          a.x-=dx*ov;a.y-=dy*ov;b.x+=dx*ov;b.y+=dy*ov;
+          const vn=(b.vx-a.vx)*dx+(b.vy-a.vy)*dy;
+          if(vn<0){const j2=-(1+.6)*vn/2;a.vx-=j2*dx;a.vy-=j2*dy;b.vx+=j2*dx;b.vy+=j2*dy}}}
     }
   }
-  let win=riggedIdx;
-  if(win<0){win=0;for(let i=1;i<n;i++)if(prog[i][F]>prog[win][F])win=i}
-  else{ // blend extra speed late into race for rigged winner so it actually wins
-    const adv=Math.max(0,Math.max(...prog.map(p=>p[F]))-prog[win][F])+.05*prog[win][F];
-    for(let f=0;f<=F;f++){const u=f/F;prog[win][f]+=adv*u*u*(3-2*u)*1.0}
-  }
-  const k=LAPS/prog[win][F];
-  prog.forEach(p=>{for(let f=0;f<=F;f++)p[f]*=k});
-  return{kind:"race",F,prog,win};
+  if(winner<0){let b=0;for(let i=1;i<n;i++)if(ms[i].y>ms[b].y)b=i;winner=b}
+  const Twin=ms[winner].fin>=0?ms[winner].fin:maxT;
+  return{pos,lead,cam,F:f,Twin,winner,n,fins:ms.map(m=>m.fin)};
 }
-function leaderAt(tl,f){let b=0;for(let i=1;i<tl.prog.length;i++)if(tl.prog[i][f]>tl.prog[b][f])b=i;return b}
-
-// Musical path timeline: beat hits, voice = hit index mod n
+async function buildRaceTL(len,beats,n,target){
+  const seedStr=$("seed").value;let Hc=len*340,course,sim;
+  const base=hashSeed(seedStr+"|n");
+  for(let it=0;it<4;it++){
+    setStatus(`Building course… (${it+1})`);await sleep();
+    course=buildCourse(Hc,seedStr);sim=simulate(course,n,beats,base,seedStr,len*3);
+    const ratio=(len-2.5)/sim.Twin;if(ratio>.93&&ratio<1.07)break;Hc*=Math.max(.5,Math.min(2,ratio));
+  }
+  let msg="";
+  if(target>=0&&sim.winner!==target){
+    let ok=false;
+    for(let k=1;k<=60;k++){
+      if(k%4===0){setStatus(`Rigging… try ${k}/60`);await sleep()}
+      const s2=simulate(course,n,beats,base+k*7919,seedStr,len*3);
+      if(s2.winner===target){sim=s2;ok=true;msg=` Rigged in ${k} tries.`;break}
+    }
+    if(!ok)msg=" Couldn't rig that winner on this course. Try another seed.";
+  }
+  const factor=sim.Twin/Math.max(1,len-2);
+  const F=Math.ceil(len*FPS);
+  const sf=f=>Math.min(sim.F-1,Math.floor(f*factor));
+  const leadA=new Int8Array(F+1);for(let f=0;f<=F;f++)leadA[f]=sim.lead[sf(f)];
+  return{kind:"race",course,sim,factor,F,leadA,sf,n,msg,winTime:sim.Twin/factor};
+}
 function buildPath(dur,beats,n){
   const hits=[0,...beats.filter(t=>t>.2&&t<dur-.1)];
   if(hits[hits.length-1]<dur)hits.push(dur);
@@ -269,174 +368,199 @@ function pathState(tl,t){
   return{i,u,voice:i%tl.n};
 }
 
-// ---------- drawing ----------
+// ================= DRAWING =================
 const cv=$("stage"),g=cv.getContext("2d");
-const TR={cx:W/2,top:230,Ls:430,Rr:170};
-const TLEN=2*TR.Ls+2*Math.PI*TR.Rr;
-function trackPos(s,off){ // s in [0,1)
-  let d=((s%1)+1)%1*TLEN;const{cx,top,Ls,Rr}=TR;
-  const yTop=top+Rr,yBot=top+Rr+Ls;
-  if(d<Ls){return{x:cx+Rr+off,y:yTop+d}} // right side going down
-  d-=Ls;const a1=Math.PI*0+d/Rr; // bottom arc, right->left
-  if(d<Math.PI*Rr){const a=d/Rr;return{x:cx+(Rr+off)*Math.cos(a),y:yBot+(Rr+off)*Math.sin(a)}}
-  d-=Math.PI*Rr;
-  if(d<Ls){return{x:cx-Rr-off,y:yBot-d}}
-  d-=Ls;const a=Math.PI+d/Rr;return{x:cx+(Rr+off)*Math.cos(a),y:yTop+(Rr+off)*Math.sin(a)}
-}
-function bg(){
-  const gr=g.createLinearGradient(0,0,0,H);gr.addColorStop(0,"#0d0d1c");gr.addColorStop(1,"#150a1c");g.fillStyle=gr;g.fillRect(0,0,W,H);
-}
+function bgFill(){const gr=g.createLinearGradient(0,0,0,H);gr.addColorStop(0,"#0d0d1c");gr.addColorStop(1,"#150a1c");g.fillStyle=gr;g.fillRect(0,0,W,H)}
 function roundRect(x,y,w,h,r){g.beginPath();g.moveTo(x+r,y);g.arcTo(x+w,y,x+w,y+h,r);g.arcTo(x+w,y+h,x,y+h,r);g.arcTo(x,y+h,x,y,r);g.arcTo(x,y,x+w,y,r);g.closePath()}
-function drawRace(tl,f,t){
-  const n=marbles.length,{cx,top,Ls,Rr}=TR;
-  // track
-  g.lineWidth=n*26+30;g.strokeStyle="#1c1c30";g.lineCap="round";
-  g.beginPath();g.moveTo(cx+Rr,top+Rr);g.lineTo(cx+Rr,top+Rr+Ls);g.arc(cx,top+Rr+Ls,Rr,0,Math.PI);g.lineTo(cx-Rr,top+Rr);g.arc(cx,top+Rr,Rr,Math.PI,0);g.closePath();g.stroke();
-  g.lineWidth=2;g.strokeStyle="#ffffff22";g.setLineDash([8,10]);
-  g.beginPath();g.moveTo(cx+Rr,top+Rr);g.lineTo(cx+Rr,top+Rr+Ls);g.arc(cx,top+Rr+Ls,Rr,0,Math.PI);g.lineTo(cx-Rr,top+Rr);g.arc(cx,top+Rr,Rr,Math.PI,0);g.closePath();g.stroke();g.setLineDash([]);
+function marbleDot(x,y,r,col,glow){
+  if(glow){g.fillStyle=col+"44";g.beginPath();g.arc(x,y,r+9,0,6.28);g.fill()}
+  const rg=g.createRadialGradient(x-r/3,y-r/3,2,x,y,r);rg.addColorStop(0,"#fff");rg.addColorStop(.25,col);rg.addColorStop(1,"#000b");
+  g.fillStyle=rg;g.beginPath();g.arc(x,y,r,0,6.28);g.fill();
+}
+// scene: course, P=[{x,y}], camY, pulse, leader, order, tSim(for spinners), overlay winner idx or -1
+function drawRaceScene(course,P,camY,pulse,leader,order,tSim,winnerIdx){
+  const off=H*.42-camY,top=camY-H*.42-60,bot=camY+H*.58+60;
+  g.save();g.translate(0,off);
+  // side walls + lane lines
+  g.fillStyle="#1a1a2e";g.fillRect(-20,top,22,bot-top);g.fillRect(W-2,top,22,bot-top);
+  g.strokeStyle="#ffffff0a";g.lineWidth=1;for(let y=Math.floor(top/80)*80;y<bot;y+=80){g.beginPath();g.moveTo(0,y);g.lineTo(W,y);g.stroke()}
   // finish line
-  g.strokeStyle="#fff";g.lineWidth=4;const fa=trackPos(0,-(n*13+10)),fb=trackPos(0,n*13+10);g.beginPath();g.moveTo(fa.x,fa.y);g.lineTo(fb.x,fb.y);g.stroke();
-  const lead=leaderAt(tl,f);
-  const order=[...Array(n).keys()].sort((a,b)=>tl.prog[b][f]-tl.prog[a][f]);
-  // marbles (leader on top)
-  [...order].reverse().forEach(i=>{
-    const m=marbles[i],p=trackPos(tl.prog[i][f]*1,(i-(n-1)/2)*26),r=i===lead?17:14;
-    if(i===lead){g.fillStyle=m.color+"44";g.beginPath();g.arc(p.x,p.y,r+10+Math.sin(t*14)*3,0,6.28);g.fill()}
-    const rg=g.createRadialGradient(p.x-r/3,p.y-r/3,2,p.x,p.y,r);rg.addColorStop(0,"#fff");rg.addColorStop(.25,m.color);rg.addColorStop(1,"#000a");
-    g.fillStyle=rg;g.beginPath();g.arc(p.x,p.y,r,0,6.28);g.fill();
-  });
-  // HUD
-  g.fillStyle="#fff";g.font="bold 20px system-ui";g.textAlign="center";
-  const lap=Math.min(LAPS,Math.floor(tl.prog[lead][f])+1);
-  g.fillText(`LAP ${lap} / ${LAPS}`,W/2,50);
-  g.fillStyle=marbles[lead].color;g.font="bold 34px system-ui";g.fillText("♫ "+marbles[lead].name,W/2,100);
-  g.fillStyle="#8b8ba3";g.font="14px system-ui";g.fillText("now singing",W/2,124);
-  g.textAlign="left";g.font="bold 16px system-ui";
-  order.forEach((i,k)=>{const y=H-34-(n-k)*26;g.fillStyle=marbles[i].color;g.beginPath();g.arc(30,y-5,7,0,6.28);g.fill();
-    g.fillStyle="#fff";g.fillText(`${k+1}  ${marbles[i].name}`,46,y);
-    if(k>0){g.fillStyle="#8b8ba3";g.font="13px system-ui";g.fillText("+"+((tl.prog[order[0]][f]-tl.prog[i][f])*100/LAPS).toFixed(1)+"%",180,y);g.font="bold 16px system-ui"}});
-  if(f>=tl.F){g.fillStyle="#000a";g.fillRect(0,330,W,260);g.textAlign="center";g.fillStyle="#ffd34d";g.font="bold 28px system-ui";g.fillText("🏆 WINNER",W/2,400);
-    g.fillStyle=marbles[order[0]].color;g.font="bold 56px system-ui";g.fillText(marbles[order[0]].name,W/2,480)}
-  g.textAlign="left";
+  const fy=course.finishY;
+  if(fy>top&&fy<bot){for(let x=0;x<W;x+=20)for(let r=0;r<2;r++){g.fillStyle=((x/20+r)%2)?"#fff":"#111";g.fillRect(x,fy-RAD*0+r*10,20,10)}
+    g.fillStyle="#ffd34d";g.font="bold 16px system-ui";g.textAlign="center";g.fillText("FINISH",W/2,fy-10);g.textAlign="left"}
+  for(const s of course.segs){
+    if(Math.max(s.y1,s.y2)<top-30||Math.min(s.y1,s.y2)>bot+30)continue;
+    const hue=(s.y1/6)%360;
+    if(s.k==="peg"){g.fillStyle=`hsl(${hue},80%,${60+pulse*25}%)`;g.beginPath();g.arc(s.x1,s.y1,s.r+pulse*3,0,6.28);g.fill()}
+    else if(s.k==="bump"){g.fillStyle=`hsl(${(hue+120)%360},85%,${42+pulse*30}%)`;g.beginPath();g.arc(s.x1,s.y1,s.r+pulse*5,0,6.28);g.fill();g.fillStyle="#fff3";g.beginPath();g.arc(s.x1-s.r/4,s.y1-s.r/4,s.r/2.2,0,6.28);g.fill()}
+    else{g.strokeStyle=`hsl(${hue},70%,${55+pulse*15}%)`;g.lineWidth=s.r*2;g.lineCap="round";g.beginPath();g.moveTo(s.x1,s.y1);g.lineTo(s.x2,s.y2);g.stroke()}
+  }
+  for(const sp of course.spins){
+    if(sp.cy<top-120||sp.cy>bot+120)continue;
+    const a=sp.ph+sp.w*tSim,c=Math.cos(a)*sp.len,sn=Math.sin(a)*sp.len;
+    g.strokeStyle="#ff9d3d";g.lineWidth=sp.r*2;g.lineCap="round";g.beginPath();g.moveTo(sp.cx-c,sp.cy-sn);g.lineTo(sp.cx+c,sp.cy+sn);g.stroke();
+    g.fillStyle="#fff";g.beginPath();g.arc(sp.cx,sp.cy,5,0,6.28);g.fill();
+  }
+  [...order].reverse().forEach(i=>{const p=P[i];if(p.y<top-30||p.y>bot+30)return;marbleDot(p.x,p.y,RAD,marbles[i].color,i===leader)});
+  // leader tag
+  const lp=P[leader];g.font="bold 14px system-ui";g.textAlign="center";g.fillStyle="#fff";g.fillText(marbles[leader].name,lp.x,lp.y-RAD-8);g.textAlign="left";
+  g.restore();
+}
+function drawHUD(P,order,leader,course,overlayWin){
+  const n=marbles.length;
+  g.textAlign="center";g.fillStyle="#000a";g.fillRect(0,0,W,118);
+  g.fillStyle=marbles[leader].color;g.font="bold 36px system-ui";g.fillText("♫ "+marbles[leader].name,W/2,58);
+  g.fillStyle="#8b8ba3";g.font="14px system-ui";g.fillText("now singing · "+VOICES[marbles[leader].preset],W/2,84);
+  // progress bar
+  g.fillStyle="#ffffff22";g.fillRect(W-16,130,6,H-330);
+  marbles.forEach((m,i)=>{const u=Math.max(0,Math.min(1,P[i].y/course.finishY));g.fillStyle=m.color;g.beginPath();g.arc(W-13,130+u*(H-330),5,0,6.28);g.fill()});
+  // board
+  g.textAlign="left";g.font="bold 15px system-ui";
+  order.forEach((i,k)=>{const y=H-24-(n-k)*24;g.fillStyle="#000a";g.fillRect(14,y-17,150,22);
+    g.fillStyle=marbles[i].color;g.beginPath();g.arc(28,y-6,6,0,6.28);g.fill();g.fillStyle="#fff";g.fillText(`${k+1}  ${marbles[i].name}`,42,y)});
+  if(overlayWin>=0){g.fillStyle="#000b";g.fillRect(0,330,W,250);g.textAlign="center";g.fillStyle="#ffd34d";g.font="bold 28px system-ui";g.fillText("🏆 WINNER",W/2,400);
+    g.fillStyle=marbles[overlayWin].color;g.font="bold 56px system-ui";g.fillText(marbles[overlayWin].name,W/2,480);g.textAlign="left"}
 }
 function drawPath(tl,t){
-  const n=marbles.length,st=pathState(tl,t),m=marbles[st.voice],x0=90,x1=W-90;
-  const stepH=70,y0=190;
-  // corridor + boxes at every hit
+  const n=marbles.length,st=pathState(tl,t),m=marbles[st.voice],x0=90,x1=W-90,stepH=70,y0=190;
+  const cam=Math.max(0,(st.i+st.u)*stepH-360);
   for(let i=0;i<tl.hits.length-1;i++){
-    const y=y0+i*stepH-camY(tl,st),side=i%2===0?x1:x0;if(y<-40||y>H+40)continue;
-    const c=marbles[i%n].color,act=i===st.i;
-    g.fillStyle=act?c:c+"55";roundRect(side-28,y-9,56,18,9);g.fill();
+    const y=y0+i*stepH-cam,side=i%2===0?x1:x0;if(y<-40||y>H+40)continue;
+    const c=marbles[i%n].color,act=i===st.i;g.fillStyle=act?c:c+"55";roundRect(side-28,y-9,56,18,9);g.fill();
   }
-  // ball
-  const sA=st.i%2===0?x0:x1,sB=st.i%2===0?x1:x0;
-  // bounces from prev wall to next wall: ball starts at wall of previous hit
   const px=st.i===0?W/2:(st.i%2===1?x0:x1),nx=st.i%2===0?x1:x0;
-  const bx=px+(nx-px)*st.u,by=y0+st.i*stepH+ (stepH)*st.u - 0 - 4*stepH*.6*st.u*(1-st.u) - camY(tl,st);
-  g.fillStyle=m.color+"55";g.beginPath();g.arc(bx,by,26,0,6.28);g.fill();
-  const rg=g.createRadialGradient(bx-6,by-6,2,bx,by,18);rg.addColorStop(0,"#fff");rg.addColorStop(.3,m.color);rg.addColorStop(1,"#000a");
-  g.fillStyle=rg;g.beginPath();g.arc(bx,by,18,0,6.28);g.fill();
+  const bx=px+(nx-px)*st.u,by=y0+st.i*stepH+stepH*st.u-4*stepH*.6*st.u*(1-st.u)-cam;
+  marbleDot(bx,by,18,m.color,true);
   g.textAlign="center";g.fillStyle=m.color;g.font="bold 34px system-ui";g.fillText("♫ "+m.name,W/2,70);
-  g.fillStyle="#8b8ba3";g.font="14px system-ui";g.fillText("now singing",W/2,94);
-  g.fillStyle="#fff";g.font="bold 16px system-ui";g.fillText(`hit ${st.i}`,W/2,H-30);g.textAlign="left";
+  g.fillStyle="#8b8ba3";g.font="14px system-ui";g.fillText("now singing · "+VOICES[m.preset],W/2,94);g.textAlign="left";
 }
-function camY(tl,st){return Math.max(0,(st.i+st.u)*70-360)}
-function draw(t){
-  g.setTransform(SC,0,0,SC,0,0);bg();
-  if(!run){ // idle preview: first frame
-    if(!songBuf){g.fillStyle="#fff";g.textAlign="center";g.font="bold 34px system-ui";g.fillText("Load a song",W/2,H/2-10);g.fillStyle="#8b8ba3";g.font="16px system-ui";g.fillText("then hit Race",W/2,H/2+22);g.textAlign="left";return}
-    const tl=getTL(),f=0;if(tl.kind==="race")drawRace(tl,f,0);else drawPath(tl,0);return;
+function idleDraw(){
+  if(run)return;
+  g.setTransform(SC,0,0,SC,0,0);bgFill();
+  if(!songBuf){g.fillStyle="#fff";g.textAlign="center";g.font="bold 34px system-ui";g.fillText("Load a song",W/2,H/2-10);g.fillStyle="#8b8ba3";g.font="16px system-ui";g.fillText("then hit Race",W/2,H/2+22);g.textAlign="left";return}
+  const len=Math.min(+$("len").value,songBuf.duration),n=marbles.length;
+  if($("mode").value==="race"){
+    const key=$("seed").value+"|"+len;
+    if(idleKey!==key){idleCourse=buildCourse(len*340,$("seed").value);idleKey=key}
+    const R0=rng(hashSeed($("seed").value+"|start")),P=[];
+    for(let i=0;i<n;i++){const row=i%2,col=Math.floor(i/2),per=Math.ceil(n/2);P.push({x:70+(W-140)*((col+(row?.5:0)+R0()*.2)/Math.max(1,per-.5)),y:50+row*36})}
+    drawRaceScene(idleCourse,P,300,0,0,[...Array(n).keys()],0,-1);drawHUD(P,[...Array(n).keys()],0,idleCourse,-1);
+  }else drawPath(buildPath(len,[],n),0);
+}
+function frame(t){
+  g.setTransform(SC,0,0,SC,0,0);bgFill();
+  const tl=run.tl;
+  if(tl.kind==="path"){drawPath(tl,t);return}
+  const n=tl.n,sim=tl.sim,f=Math.min(tl.F,Math.floor(t*FPS)),sf=tl.sf(f);
+  const P=[];for(let i=0;i<n;i++)P.push({x:sim.pos[(sf*n+i)*2],y:sim.pos[(sf*n+i)*2+1]});
+  const ts=sf/FPS,sc=i=>(sim.fins[i]>=0&&sim.fins[i]<=ts)?1e9-sim.fins[i]:P[i].y;
+  const order=[...Array(n).keys()].sort((a,b)=>sc(b)-sc(a));
+  const leader=tl.leadA[f];
+  // rank: finished marbles by y is fine because they fall past the line in order
+  let pulse=0;for(const b of run.beatsRel){if(b<=t)pulse=Math.exp(-(t-b)*9);else break}
+  drawRaceScene(tl.course,P,sim.cam[sf],pulse,leader,order,sf/FPS,-1);
+  drawHUD(P,order,leader,tl.course,t>=tl.winTime?sim.winner:-1);
+}
+
+// ================= FAKE VOICES (granular pitch shift + character FX) =================
+function pitchShift(x,ratio,sr){
+  if(Math.abs(ratio-1)<1e-3)return x.slice();
+  const G=Math.round(sr*.055)&~1,Hh=G/2,out=new Float32Array(x.length),win=new Float32Array(G);
+  for(let j=0;j<G;j++)win[j]=.5-.5*Math.cos(2*Math.PI*j/G);
+  for(let o=-Hh;o<x.length;o+=Hh){
+    for(let j=0;j<G;j++){const idx=o+j;if(idx<0||idx>=out.length)continue;
+      const sp=o+Hh+(j-Hh)*ratio,i0=Math.floor(sp);if(i0<0||i0+1>=x.length)continue;
+      const fr=sp-i0;out[idx]+=(x[i0]*(1-fr)+x[i0+1]*fr)*win[j]}}
+  return out;
+}
+function applyVoice(x,key,sr){
+  let y;
+  switch(key){
+    case"chip":y=pitchShift(x,1.5,sr);break;
+    case"deep":y=pitchShift(x,.72,sr);break;
+    case"squeak":{y=pitchShift(x,2,sr);let p=0;for(let i=0;i<y.length;i++){const v=y[i];y[i]=v-.7*p;p=v}break}
+    case"robot":{y=pitchShift(x,.9,sr);for(let i=0;i<y.length;i++)y[i]=y[i]*(.35+.9*Math.sin(2*Math.PI*75*i/sr));break}
+    case"alien":{y=pitchShift(x,1.75,sr);for(let i=0;i<y.length;i++)y[i]*=1+.55*Math.sin(2*Math.PI*9*i/sr);break}
+    case"monster":{y=pitchShift(x,.58,sr);for(let i=0;i<y.length;i++)y[i]=Math.tanh(y[i]*3.2)*.8;break}
+    case"muffle":{y=x.slice();let p=0;for(let i=0;i<y.length;i++){p+=.09*(y[i]-p);y[i]=p*1.7}break}
+    default:y=x.slice();
   }
-  const f=Math.min(run.tl.F,Math.floor(t*FPS));
-  if(run.tl.kind==="race")drawRace(run.tl,f,t);else drawPath(run.tl,t);
+  return y;
 }
-function getTL(){
-  const len=Math.min(+$("len").value,songBuf.duration),s=+$("start").value;
-  const beats=beatsAll.filter(t=>t>=s&&t<s+len).map(t=>t-s);
-  const n=marbles.length;
-  return $("mode").value==="race"?buildRace(len,beats,n,+$("winner").value):buildPath(len,beats,n);
+async function voiceBuffer(m,s,len){
+  const src=m.buf||songBuf,sr=src.sampleRate,a=Math.floor(s*sr),N=Math.floor(len*sr);
+  const key=m.buf?`f${m.bufId}|${s}|${len}`:`${songId}|${m.preset}|${s}|${len}`;
+  if(voiceCache.has(key))return voiceCache.get(key);
+  const ch=src.getChannelData(0),seg=new Float32Array(N);
+  for(let i=0;i<N&&a+i<ch.length;i++)seg[i]=ch[a+i];
+  const out=m.buf?seg:applyVoice(seg,m.preset,sr);
+  let mx=0;for(let i=0;i<out.length;i+=7)mx=Math.max(mx,Math.abs(out[i]));
+  if(mx>1||(!m.buf&&mx>0&&mx<.5)){const k=.9/mx;for(let i=0;i<out.length;i++)out[i]*=k}
+  const buf=actx.createBuffer(1,N,sr);buf.copyToChannel(out,0);voiceCache.set(key,buf);await sleep();return buf;
 }
 
-// ---------- playback + recording ----------
-const EFFECTS={
-  normal:c=>c.createGain(),
-  tele:c=>{const f=c.createBiquadFilter();f.type="bandpass";f.frequency.value=1400;f.Q.value=.9;return f},
-  muffled:c=>{const f=c.createBiquadFilter();f.type="lowpass";f.frequency.value=700;return f},
-  bright:c=>{const f=c.createBiquadFilter();f.type="highpass";f.frequency.value=2200;return f},
-  bass:c=>{const f=c.createBiquadFilter();f.type="lowshelf";f.frequency.value=220;f.gain.value=14;return f},
-  radio:c=>{const f=c.createBiquadFilter();f.type="bandpass";f.frequency.value=2000;f.Q.value=.6;const w=c.createWaveShaper();const cu=new Float32Array(256);for(let i=0;i<256;i++){const x=i/128-1;cu[i]=Math.tanh(x*3)}w.curve=cu;f.connect(w);f.out=w;return f}
-};
-function voiceLeader(tl,f,t){return tl.kind==="race"?leaderAt(tl,f):pathState(tl,t).voice}
-
+// ================= PLAYBACK + RECORDING =================
 async function startRun(){
-  if(!songBuf)return;ensureCtx();stopRun(true);$("dl").style.display="none";
-  const len=Math.min(+$("len").value,songBuf.duration),s=+$("start").value,tl=getTL(),n=marbles.length;
+  if(!songBuf)return;ensureCtx();stopRun(true);$("dl").style.display="none";$("go").disabled=true;
+  const len=Math.min(+$("len").value,songBuf.duration),s=+$("start").value,n=marbles.length;
+  const beats=beatsAll.filter(t=>t>=s&&t<s+len).map(t=>t-s);
+  let tl;
+  try{
+    if($("mode").value==="race")tl=await buildRaceTL(len,beats,n,+$("winner").value);else tl=buildPath(len,beats,n);
+  }catch(e){setStatus("Simulation failed: "+e.message);$("go").disabled=false;return}
+  const bufs=[];
+  for(let i=0;i<n;i++){setStatus(`Making voices… ${i+1}/${n}`);bufs.push(await voiceBuffer(marbles[i],s,len))}
   const master=actx.createGain(),dest=actx.createMediaStreamDestination();
   master.connect(actx.destination);master.connect(dest);
   const gains=[],srcs=[];
-  marbles.forEach((m,i)=>{
-    const src=actx.createBufferSource();src.buffer=m.buf||songBuf;
-    const fx=m.buf?actx.createGain():EFFECTS[m.preset](actx);const gn=actx.createGain();gn.gain.value=0;
-    src.connect(fx);(fx.out||fx).connect(gn);gn.connect(master);gains.push(gn);srcs.push(src);
-  });
-  const t0=actx.currentTime+.25;
-  // schedule voice handoffs from timeline
-  const F=tl.F;let cur=-1;
-  for(let f=0;f<=F;f++){
-    const t=f/FPS,v=voiceLeader(tl,f,t);
-    if(v!==cur){
-      gains.forEach((gn,i)=>{gn.gain.setTargetAtTime(i===v?1:0,t0+t,.012)});
-      cur=v;
-    }
+  bufs.forEach(b=>{const src=actx.createBufferSource();src.buffer=b;const gn=actx.createGain();gn.gain.value=0;src.connect(gn);gn.connect(master);gains.push(gn);srcs.push(src)});
+  const t0=actx.currentTime+.3;let cur=-1;
+  for(let f=0;f<=tl.F;f++){
+    const t=f/FPS,v=tl.kind==="race"?tl.leadA[f]:pathState(tl,t).voice;
+    if(v!==cur){gains.forEach((gn,i)=>gn.gain.setTargetAtTime(i===v?1:0,t0+t,.012));cur=v}
   }
-  srcs.forEach(src=>src.start(t0,s,len));
-  run={tl,t0,len,srcs,gains,raf:0,dest,rec:null,chunks:[]};
+  srcs.forEach(src=>src.start(t0,0));
+  run={tl,t0,len,srcs,raf:0,rec:null,chunks:[],beatsRel:beats};
   if($("rec").checked&&window.MediaRecorder){
     const vs=cv.captureStream(30);
     const stream=new MediaStream([...vs.getVideoTracks(),...dest.stream.getAudioTracks()]);
     const mt=["video/mp4;codecs=avc1,mp4a.40.2","video/mp4","video/webm;codecs=vp9,opus","video/webm;codecs=vp8,opus","video/webm"].find(t=>MediaRecorder.isTypeSupported(t));
     try{
       const rec=new MediaRecorder(stream,{mimeType:mt,videoBitsPerSecond:8e6});
-      rec.ondataavailable=e=>{if(e.data.size)run&&run.chunks.push(e.data)};
-      rec.onstop=()=>finishRec(rec,mt);
-      rec.start(250);run.rec=rec;
+      const r=run;rec.ondataavailable=e=>{if(e.data.size)r.chunks.push(e.data)};
+      rec.onstop=()=>finishRec(r,mt);rec.start(250);run.rec=rec;
     }catch(e){setStatus("Recording not supported here, playing only.")}
   }
-  $("go").disabled=true;$("stop").disabled=false;setStatus("Racing…");
+  $("stop").disabled=false;setStatus("Racing…"+(tl.msg||""));
   const loop=()=>{
-    if(!run)return;
-    const t=actx.currentTime-run.t0;
-    if(t<0){draw(0);run.raf=requestAnimationFrame(loop);return}
-    draw(Math.min(t,len));
-    if(t>=len+1.2){endRun();return}
+    if(!run)return;const t=actx.currentTime-run.t0;
+    if(t<0){frame(0);run.raf=requestAnimationFrame(loop);return}
+    frame(Math.min(t,len));
+    if(t>=len+.8){endRun();return}
     run.raf=requestAnimationFrame(loop);
   };
   loop();
 }
-function finishRec(rec,mt){
-  const r=run||lastRun;if(!r)return;
+function finishRec(r,mt){
   const blob=new Blob(r.chunks,{type:mt||"video/webm"});
   const a=$("dl");a.href=URL.createObjectURL(blob);a.download="marbeat."+(mt&&mt.includes("mp4")?"mp4":"webm");a.style.display="inline-block";
   setStatus("Done. Download your video below.");
 }
-let lastRun=null;
 function endRun(){
-  if(!run)return;lastRun=run;
-  cancelAnimationFrame(run.raf);
+  if(!run)return;lastRun=run;cancelAnimationFrame(run.raf);
   try{run.srcs.forEach(s=>s.stop())}catch(e){}
-  const r=run.rec;
-  if(r&&r.state!=="inactive"){r.stop()}else setStatus("Done.");
+  const r=run.rec;if(r&&r.state!=="inactive")r.stop();else setStatus("Done.");
   run=null;$("go").disabled=false;$("stop").disabled=true;
 }
 function stopRun(silent){
   if(!run)return;
   if(run.rec){run.rec.onstop=null;try{run.rec.stop()}catch(e){}}
   cancelAnimationFrame(run.raf);try{run.srcs.forEach(s=>s.stop())}catch(e){}
-  run=null;$("go").disabled=!songBuf;$("stop").disabled=true;if(!silent)setStatus("Stopped.");
+  run=null;$("go").disabled=!songBuf;$("stop").disabled=true;if(!silent)setStatus("Stopped.");idleDraw();
 }
 $("go").onclick=startRun;$("stop").onclick=()=>stopRun(false);
-["mode","winner","seed","len","start"].forEach(id=>$(id).addEventListener("change",()=>{if(!run)draw(0)}));
-$("seed").addEventListener("input",()=>{if(!run)draw(0)});
+["mode","winner","seed","len","start"].forEach(id=>$(id).addEventListener("change",idleDraw));
+$("seed").addEventListener("input",idleDraw);
 
 initMarbles();
 </script>
