@@ -52,6 +52,11 @@ footer{text-align:center;color:var(--mut);font-size:13px;padding:40px 20px;borde
 #status{font-size:13px;color:var(--mut);min-height:20px;text-align:center}
 textarea{width:100%;min-height:84px;background:#0e0e17;border:1px solid var(--line);color:var(--tx);border-radius:8px;padding:8px;font:14px system-ui;resize:vertical}
 .chk{display:flex;gap:8px;align-items:center;font-size:13px;color:var(--mut);margin:8px 0 0}
+.dirrow{display:grid;grid-template-columns:auto 62px auto 1fr 30px;gap:6px;align-items:center;margin-bottom:6px;font-size:13px;color:var(--mut)}
+.dirrow button{background:#0e0e17;border:1px solid var(--line);color:var(--mut);border-radius:8px;cursor:pointer;height:32px}
+.dirrow input[type=number]{width:100%;background:#0e0e17;border:1px solid var(--line);color:var(--tx);border-radius:8px;padding:6px}
+.note{font-size:12px;color:var(--mut);margin:0 0 8px}
+.btn.sm{padding:8px 10px;font-size:13px}
 </style>
 </head>
 <body>
@@ -107,6 +112,8 @@ textarea{width:100%;min-height:84px;background:#0e0e17;border:1px solid var(--li
           <option value="race">Marble Race</option>
           <option value="path">Musical Path</option>
         </select>
+        <label>Map</label>
+        <select id="map"></select>
         <div class="row">
           <div><label>Marbles</label><select id="count"></select></div>
           <div><label>Rig the winner</label><select id="winner"></select></div>
@@ -117,11 +124,24 @@ textarea{width:100%;min-height:84px;background:#0e0e17;border:1px solid var(--li
         </div>
       </div>
       <div class="panel">
+        <h3>Director · rig the overtakes</h3>
+        <p class="note">Pick who leads from which second. The physics gets steered so that marble takes the lead by then. "Rig the winner" adds a final push on top.</p>
+        <div id="dirRows"></div>
+        <div class="row"><button class="btn ghost sm" id="dirAdd">+ Overtake</button><button class="btn ghost sm" id="dirAuto">✨ Auto-plan</button><button class="btn ghost sm" id="dirClear">Clear</button></div>
+      </div>
+      <div class="panel">
         <h3>3 · Lyrics &amp; singing</h3>
         <label>Voice engine</label>
         <select id="engine"><option value="sing">Sing lyrics (synthesized voices)</option><option value="remix">Remix the song (pitch-shifted)</option></select>
-        <label>Lyrics: one word lands on each beat, and the lead marble sings it</label>
-        <textarea id="lyrics">Who is the best marble in the world tonight we are rolling down the hill and nobody can stop us now so cheer for your favourite one and watch them go go go</textarea>
+        <label>Lyric sync</label>
+        <select id="syncmode"><option value="auto">Auto: lock to the song's vocal hits</option><option value="beat">On the beat</option><option value="even">Even spread</option></select>
+        <label>Lyrics (new line = new phrase). The lead marble sings them.</label>
+        <textarea id="lyrics">Who is the best marble in the world tonight
+We are rolling down the hill and nobody can stop us now
+So cheer for your favourite one and watch them go go go</textarea>
+        <label class="chk"><input type="checkbox" id="loop" checked> Repeat lyrics to fill the whole clip</label>
+        <label>Nudge: <span id="syncLbl">0.00</span>s (negative = earlier, positive = later)</label>
+        <input type="range" id="syncoff" min="-0.6" max="0.6" step="0.02" value="0" oninput="document.getElementById('syncLbl').textContent=(+this.value).toFixed(2)">
         <label class="chk"><input type="checkbox" id="melody" checked> Follow the song's melody (rough)</label>
         <label class="chk"><input type="checkbox" id="novox"> Reduce original vocals (stereo songs)</label>
         <label>Song under the voices: <span id="bvLbl">40</span>%</label>
@@ -196,13 +216,41 @@ function initMarbles(){
     d.innerHTML=`<input type="color" value="${m.color}"><input type="text" value="${m.name}" maxlength="14"><select>${VKEYS.map(k=>`<option value="${k}" ${k===m.preset?"selected":""}>${VOICES[k]}</option>`).join("")}</select><input class="file" type="file" accept="audio/*" title="Optional: own audio for this marble">`;
     const [c,t,s,f]=d.children;
     c.oninput=()=>{m.color=c.value;idleDraw()};
-    t.oninput=()=>{m.name=t.value||"?";fillWinner();idleDraw()};
+    t.oninput=()=>{m.name=t.value||"?";fillWinner();renderDir();idleDraw()};
     s.onchange=()=>{m.preset=s.value};
     f.onchange=async()=>{if(!f.files[0])return;ensureCtx();try{m.buf=await actx.decodeAudioData(await f.files[0].arrayBuffer());m.fname=f.files[0].name;m.bufId=Math.random();setStatus(`Voice file loaded for ${m.name}.`)}catch(e){setStatus("Couldn't decode that file.")}};
     box.appendChild(d);
   });
-  fillWinner();idleDraw();
+  fillWinner();renderDir();idleDraw();
 }
+let dirKeys=[];
+function renderDir(){
+  const box=$("dirRows");box.innerHTML="";dirKeys.sort((a,b)=>a.t-b.t);
+  dirKeys.forEach((k,i)=>{
+    if(k.m>=marbles.length)k.m=0;
+    const d=document.createElement("div");d.className="dirrow";
+    d.innerHTML=`<span>at</span><input type="number" min="0" step="0.5" value="${k.t}"><span>s →</span><select>${marbles.map((m,j)=>`<option value="${j}" ${j===k.m?"selected":""}>${m.name}</option>`).join("")}</select><button title="Remove">✕</button>`;
+    const [,ti,,sel,x]=d.children;
+    ti.onchange=()=>{k.t=Math.max(0,+ti.value||0);renderDir()};sel.onchange=()=>{k.m=+sel.value};x.onclick=()=>{dirKeys.splice(i,1);renderDir()};
+    box.appendChild(d);
+  });
+  if(!dirKeys.length)box.innerHTML='<p class="note">No overtakes planned. Add some, or hit Auto-plan.</p>';
+}
+$("dirAdd").onclick=()=>{const last=dirKeys.length?dirKeys[dirKeys.length-1].t:0;dirKeys.push({t:+(last+3).toFixed(1),m:Math.floor(Math.random()*marbles.length)});renderDir()};
+$("dirClear").onclick=()=>{dirKeys=[];renderDir()};
+$("dirAuto").onclick=()=>{
+  if(!songBuf){setStatus("Load a song first.");return}
+  const len=Math.min(+$("len").value,songBuf.duration),s=+$("start").value,n=marbles.length;
+  const beats=beatsAll.filter(t=>t>=s&&t<s+len).map(t=>t-s),R=rng(hashSeed($("seed").value+"|dir"));
+  const cnt=Math.max(2,Math.floor((len-6)/5));dirKeys=[];let prev=-1;
+  for(let i=0;i<cnt;i++){
+    const target=3+(len-9)*(i/Math.max(1,cnt-1));let t=target;
+    if(beats.length){t=beats.reduce((b,x)=>Math.abs(x-target)<Math.abs(b-target)?x:b,beats[0])}
+    t=Math.max(2,Math.min(len-4,t));
+    let m;do{m=Math.floor(R()*n)}while(m===prev&&n>1);prev=m;dirKeys.push({t:+t.toFixed(1),m});
+  }
+  renderDir();setStatus("Planned "+dirKeys.length+" overtakes on the beat. Edit them or hit Race.");
+};
 function fillWinner(){const w=$("winner"),v=w.value;w.innerHTML="";w.add(new Option("Random","-1"));marbles.forEach((m,i)=>w.add(new Option(m.name,i)));if([...w.options].some(o=>o.value===v))w.value=v}
 countSel.onchange=initMarbles;
 $("reroll").onclick=()=>{$("seed").value=Math.floor(Math.random()*99999);idleDraw()};
@@ -258,21 +306,37 @@ function hashSeed(s){let h=2166136261;for(const ch of String(s)){h^=ch.charCodeA
 
 // ================= MARBLE PHYSICS =================
 const RAD=13,GRAV=1000,BAND=120,PAD=45;
-function buildCourse(Hc,seedStr){
-  const R=rng(hashSeed(seedStr+"|course")),segs=[],spins=[];
+const MAPS={
+  neon:{label:"Neon Mix · a bit of everything",w:[1,1,1,1,1],pal:{bg1:"#0d0d1c",bg2:"#150a1c",hb:170,hs:190,sp:"#ff9d3d"}},
+  pachinko:{label:"Pachinko Palace · pegs & bumpers",w:[.3,4,1,.5,2],pal:{bg1:"#2a0f2e",bg2:"#3b1346",hb:290,hs:90,sp:"#ffd34d"}},
+  slide:{label:"Slide City · zig-zag ramps",w:[4,.5,1,.3,.8],pal:{bg1:"#07182b",bg2:"#0b2c47",hb:165,hs:55,sp:"#7df9ff"}},
+  spinner:{label:"Spinner Gauntlet · lava",w:[.4,1,.4,4,1.2],pal:{bg1:"#1c0805",bg2:"#33100a",hb:0,hs:55,sp:"#ffe14d"}},
+  funnel:{label:"Funnel Falls · bottlenecks",w:[.8,1.5,3.5,.6,1],pal:{bg1:"#04142a",bg2:"#07384f",hb:185,hs:60,sp:"#ff7ad9"}},
+  chaos:{label:"Chaos · random map & colours",w:null,pal:null}
+};
+function palFor(key,seedStr){
+  if(key!=="chaos")return MAPS[key].pal;
+  const R=rng(hashSeed(seedStr+"|pal")),hb=Math.floor(R()*360);
+  return{bg1:`hsl(${hb},45%,7%)`,bg2:`hsl(${(hb+40)%360},50%,12%)`,hb,hs:60+R()*160,sp:`hsl(${(hb+180)%360},95%,62%)`};
+}
+function buildCourse(Hc,seedStr,mapKey){
+  mapKey=mapKey||"neon";
+  const R=rng(hashSeed(seedStr+"|course|"+mapKey)),segs=[],spins=[];
+  const wts=MAPS[mapKey].w;
+  const pick=()=>{const w=wts||[R()*3,R()*3,R()*3,R()*3,R()*3],tot=w.reduce((a,b)=>a+b,0);let r=R()*tot;for(let i=0;i<w.length;i++){r-=w[i];if(r<=0)return i}return 0};
   const seg=(x1,y1,x2,y2,r,e,k)=>segs.push({x1,y1,x2,y2,r,e,k});
   let y=230;
   while(y<Hc-150){
-    const t=Math.floor(R()*5);
+    const t=pick();
     if(t===0){ // zigzag ramps
       const cnt=3+Math.floor(R()*3);let side=R()<.5?0:1;
       for(let i=0;i<cnt;i++){const gap=62+R()*14,drop=75+R()*35;
         if(side===0)seg(0,y,W-gap,y+drop,5,.35,"ramp");else seg(W,y,gap,y+drop,5,.35,"ramp");
-        side^=1;y+=125}
+        side^=1;y+=drop+78}  // next ramp must clear the gap by more than a marble's width
       y+=50;
     }else if(t===1){ // peg field
       const rows=5+Math.floor(R()*3);
-      for(let r=0;r<rows;r++){for(let x=30+(r%2)*30;x<W-15;x+=60)seg(x,y,x,y,7,.5,"peg");y+=52}
+      for(let r=0;r<rows;r++){for(let x=60+(r%2)*30;x<=W-60-(r%2)*30;x+=60)seg(x,y,x,y,7,.5,"peg");y+=52} // keep pegs clear of the walls so marbles cannot wedge
       y+=60;
     }else if(t===2){ // funnel
       const gap=56+R()*20;
@@ -293,13 +357,12 @@ function buildCourse(Hc,seedStr){
   }
   const finishY=y+60,floorY=finishY+170;
   seg(0,floorY,W,floorY,6,.2,"ramp");
-  // band index (static)
   const bands=[];for(let i=0;i<=Math.ceil(floorY/BAND)+2;i++)bands.push([]);
   segs.forEach((s,i)=>{
     const lo=Math.floor((Math.min(s.y1,s.y2)-s.r-PAD)/BAND),hi=Math.floor((Math.max(s.y1,s.y2)+s.r+PAD)/BAND);
     for(let b=Math.max(0,lo);b<=Math.min(bands.length-1,hi);b++)bands[b].push(i);
   });
-  return{segs,spins,bands,finishY,floorY,Hc};
+  return{segs,spins,bands,finishY,floorY,Hc,pal:palFor(mapKey,seedStr)};
 }
 function hitSeg(m,x1,y1,x2,y2,r,e){
   const dx=x2-x1,dy=y2-y1,l2=dx*dx+dy*dy;let u=l2?((m.x-x1)*dx+(m.y-y1)*dy)/l2:0;u=u<0?0:u>1?1:u;
@@ -310,13 +373,13 @@ function hitSeg(m,x1,y1,x2,y2,r,e){
   const vn=m.vx*nx+m.vy*ny;
   if(vn<0){m.vx-=(1+e)*vn*nx;m.vy-=(1+e)*vn*ny;m.vx*=.998}
 }
-function simulate(course,n,beats,nudgeSeed,seedStr,maxT){
+function simulate(course,n,beats,nudgeSeed,seedStr,maxT,sched){
   const R0=rng(hashSeed(seedStr+"|start")),Rn=rng(nudgeSeed>>>0),{segs,spins,bands,finishY}=course;
   const ms=[];
   for(let i=0;i<n;i++){const row=i%2,col=Math.floor(i/2),per=Math.ceil(n/2);
     ms.push({x:70+(W-140)*((col+(row?.5:0)+R0()*.2)/Math.max(1,per-.5)),y:50+row*36,vx:(R0()-.5)*30,vy:0,fin:-1,still:0})}
   const maxF=Math.ceil(maxT*FPS)+1,pos=new Float32Array(maxF*n*2),lead=new Int8Array(maxF),cam=new Float32Array(maxF);
-  let f=0,bi=0,camY=300,winner=-1,done=0,endF=-1;
+  let f=0,bi=0,camY=300,winner=-1,done=0,endF=-1,di=-1;
   const DT=1/120;
   for(;f<maxF;f++){
     const t=f/FPS;
@@ -332,6 +395,17 @@ function simulate(course,n,beats,nudgeSeed,seedStr,maxT){
     while(bi<beats.length&&beats[bi]<=t){const m=ms[Math.floor(Rn()*n)];m.vx+=(Rn()-.5)*300;m.vy-=40*Rn();bi++}
     for(let s=0;s<2;s++){
       const st=t+s*DT;
+      if(sched&&sched.length){ // director: steer the desired leader forward, hold the others back
+        while(di+1<sched.length&&sched[di+1].ts<=st)di++;
+        if(di>=0){
+          const D=sched[di].m,dd=ms[D];let Lm=-1,ly=-1e9;
+          for(let q=0;q<n;q++)if(ms[q].fin<0&&ms[q].y>ly){ly=ms[q].y;Lm=q}
+          if(Lm>=0&&dd.fin<0){
+            if(Lm!==D){const gap=ly-dd.y,k=Math.max(.6,Math.min(4,.6+gap/70));dd.vy+=GRAV*DT*1.1*k;ms[Lm].vy-=GRAV*DT*.9*Math.min(k,2.5);ms[Lm].vy*=1-.006*Math.min(k,3)}
+            else{dd.vy+=GRAV*DT*.12;for(let q=0;q<n;q++)if(q!==D&&ms[q].fin<0&&dd.y-ms[q].y>220)ms[q].vy+=GRAV*DT*.25}
+          }
+        }
+      }
       for(const m of ms){
         m.vy+=GRAV*DT;const sp=Math.hypot(m.vx,m.vy);if(sp>1300){m.vx*=1300/sp;m.vy*=1300/sp}
         m.x+=m.vx*DT;m.y+=m.vy*DT;
@@ -343,7 +417,7 @@ function simulate(course,n,beats,nudgeSeed,seedStr,maxT){
           if(m.x!==px||m.y!==py){ // spin kick: add tangential push
             const rx=m.x-sp2.cx,ry=m.y-sp2.cy;m.vx+=-ry*sp2.w*.35*DT*60*.1;m.vy+=rx*sp2.w*.35*DT*60*.1}}}
         // stuck guard
-        if(Math.hypot(m.vx,m.vy)<12&&m.y<finishY){m.still++;if(m.still>200){m.vx+=(Rn()-.5)*320;m.vy-=100;m.still=0}}else m.still=0;
+        if(Math.hypot(m.vx,m.vy)<12&&m.y<finishY){m.still++;if(m.still>150){m.vx+=(m.x<W/2?1:-1)*(220+Rn()*160);m.vy-=160;m.still=0}}else m.still=0;
         if(m.fin<0&&m.y>finishY){m.fin=st;done++;if(winner<0)winner=ms.indexOf(m)}
       }
       for(let i=0;i<n;i++)for(let j=i+1;j<n;j++){
@@ -358,23 +432,41 @@ function simulate(course,n,beats,nudgeSeed,seedStr,maxT){
   const Twin=ms[winner].fin>=0?ms[winner].fin:maxT;
   return{pos,lead,cam,F:f,Twin,winner,n,fins:ms.map(m=>m.fin)};
 }
-async function buildRaceTL(len,beats,n,target){
-  const seedStr=$("seed").value;let Hc=len*340,course,sim;
+function getSchedule(len,n){
+  const K=dirKeys.filter(k=>k.m<n&&k.t>=0&&k.t<len-3).map(k=>({t:k.t,m:k.m})).sort((a,b)=>a.t-b.t);
+  const w=+$("winner").value;
+  if(w>=0&&w<n){const last=K.length?K[K.length-1].t:-1;K.push({t:Math.min(len-4.5,Math.max(last+1.5,len-7)),m:w})}
+  return K;
+}
+function evalSched(sim,K,f2){
+  let ok=0;
+  for(const k of K){const fr=Math.min(sim.F-1,Math.floor((k.t+.4)*f2*FPS));if(sim.lead[fr]===k.m)ok++}
+  return ok;
+}
+async function buildRaceTL(len,beats,n){
+  const seedStr=$("seed").value,mapKey=$("map").value;let Hc=len*210,course,sim,bestC=null;
   const base=hashSeed(seedStr+"|n");
-  for(let it=0;it<4;it++){
+  for(let it=0;it<7;it++){
     setStatus(`Building course… (${it+1})`);await sleep();
-    course=buildCourse(Hc,seedStr);sim=simulate(course,n,beats,base,seedStr,len*3);
-    const ratio=(len-2.5)/sim.Twin;if(ratio>.93&&ratio<1.07)break;Hc*=Math.max(.5,Math.min(2,ratio));
+    course=buildCourse(Hc,seedStr,mapKey);sim=simulate(course,n,beats,base,seedStr,len*3,null);
+    const ratio=(len-2.5)/sim.Twin,err=Math.abs(Math.log(ratio));
+    if(!bestC||err<bestC.err)bestC={err,course,sim};
+    if(ratio>.95&&ratio<1.05)break;Hc*=Math.max(.4,Math.min(2.2,ratio));
   }
+  course=bestC.course;sim=bestC.sim; // keep the attempt closest to the target length
   let msg="";
-  if(target>=0&&sim.winner!==target){
-    let ok=false;
-    for(let k=1;k<=60;k++){
-      if(k%4===0){setStatus(`Rigging… try ${k}/60`);await sleep()}
-      const s2=simulate(course,n,beats,base+k*7919,seedStr,len*3);
-      if(s2.winner===target){sim=s2;ok=true;msg=` Rigged in ${k} tries.`;break}
+  const K=getSchedule(len,n);
+  if(K.length){
+    let factor=sim.Twin/Math.max(1,len-2),best=null;
+    for(let k=0;k<16;k++){
+      if(k%2===0){setStatus(`Directing overtakes… try ${k+1}/16`);await sleep()}
+      const sc=K.map(x=>({ts:x.t*factor-2.4,m:x.m}));
+      const s2=simulate(course,n,beats,base+k*7919,seedStr,len*3,sc);
+      const f2=s2.Twin/Math.max(1,len-2),score=evalSched(s2,K,f2);
+      if(!best||score>best.score)best={sim:s2,score};
+      factor=f2;if(score===K.length)break;
     }
-    if(!ok)msg=" Couldn't rig that winner on this course. Try another seed.";
+    sim=best.sim;msg=` Overtakes landed: ${best.score}/${K.length}.`+(best.score<K.length?" Try another seed or map for the rest.":"");
   }
   const factor=sim.Twin/Math.max(1,len-2);
   const F=Math.ceil(len*FPS);
@@ -395,7 +487,7 @@ function pathState(tl,t){
 
 // ================= DRAWING =================
 const cv=$("stage"),g=cv.getContext("2d");
-function bgFill(){const gr=g.createLinearGradient(0,0,0,H);gr.addColorStop(0,"#0d0d1c");gr.addColorStop(1,"#150a1c");g.fillStyle=gr;g.fillRect(0,0,W,H)}
+function bgFill(pal){const gr=g.createLinearGradient(0,0,0,H);gr.addColorStop(0,pal?pal.bg1:"#0d0d1c");gr.addColorStop(1,pal?pal.bg2:"#150a1c");g.fillStyle=gr;g.fillRect(0,0,W,H)}
 function roundRect(x,y,w,h,r){g.beginPath();g.moveTo(x+r,y);g.arcTo(x+w,y,x+w,y+h,r);g.arcTo(x+w,y+h,x,y+h,r);g.arcTo(x,y+h,x,y,r);g.arcTo(x,y,x+w,y,r);g.closePath()}
 function marbleDot(x,y,r,col,glow){
   if(glow){g.fillStyle=col+"44";g.beginPath();g.arc(x,y,r+9,0,6.28);g.fill()}
@@ -404,8 +496,9 @@ function marbleDot(x,y,r,col,glow){
 }
 // scene: course, P=[{x,y}], camY, pulse, leader, order, tSim(for spinners), overlay winner idx or -1
 function drawRaceScene(course,P,camY,pulse,leader,order,tSim,winnerIdx){
-  const off=H*.42-camY,top=camY-H*.42-60,bot=camY+H*.58+60;
+  const pal=course.pal,off=H*.42-camY,top=camY-H*.42-60,bot=camY+H*.58+60;
   g.save();g.translate(0,off);
+  g.fillStyle="#ffffff18";for(let gy=Math.floor(top/70);gy<bot/70;gy++){for(let k=0;k<3;k++){const hx=((gy*7919+k*104729)%1000)/1000*W,hy=gy*70+((gy*31+k*17)%70);g.fillRect(hx,hy,2,2)}}
   // side walls + lane lines
   g.fillStyle="#1a1a2e";g.fillRect(-20,top,22,bot-top);g.fillRect(W-2,top,22,bot-top);
   g.strokeStyle="#ffffff0a";g.lineWidth=1;for(let y=Math.floor(top/80)*80;y<bot;y+=80){g.beginPath();g.moveTo(0,y);g.lineTo(W,y);g.stroke()}
@@ -415,7 +508,7 @@ function drawRaceScene(course,P,camY,pulse,leader,order,tSim,winnerIdx){
     g.fillStyle="#ffd34d";g.font="bold 16px system-ui";g.textAlign="center";g.fillText("FINISH",W/2,fy-10);g.textAlign="left"}
   for(const s of course.segs){
     if(Math.max(s.y1,s.y2)<top-30||Math.min(s.y1,s.y2)>bot+30)continue;
-    const hue=(s.y1/6)%360;
+    const hue=(pal.hb+(s.y1*.17)%pal.hs)%360;
     if(s.k==="peg"){g.fillStyle=`hsl(${hue},80%,${60+pulse*25}%)`;g.beginPath();g.arc(s.x1,s.y1,s.r+pulse*3,0,6.28);g.fill()}
     else if(s.k==="bump"){g.fillStyle=`hsl(${(hue+120)%360},85%,${42+pulse*30}%)`;g.beginPath();g.arc(s.x1,s.y1,s.r+pulse*5,0,6.28);g.fill();g.fillStyle="#fff3";g.beginPath();g.arc(s.x1-s.r/4,s.y1-s.r/4,s.r/2.2,0,6.28);g.fill()}
     else{g.strokeStyle=`hsl(${hue},70%,${55+pulse*15}%)`;g.lineWidth=s.r*2;g.lineCap="round";g.beginPath();g.moveTo(s.x1,s.y1);g.lineTo(s.x2,s.y2);g.stroke()}
@@ -423,7 +516,7 @@ function drawRaceScene(course,P,camY,pulse,leader,order,tSim,winnerIdx){
   for(const sp of course.spins){
     if(sp.cy<top-120||sp.cy>bot+120)continue;
     const a=sp.ph+sp.w*tSim,c=Math.cos(a)*sp.len,sn=Math.sin(a)*sp.len;
-    g.strokeStyle="#ff9d3d";g.lineWidth=sp.r*2;g.lineCap="round";g.beginPath();g.moveTo(sp.cx-c,sp.cy-sn);g.lineTo(sp.cx+c,sp.cy+sn);g.stroke();
+    g.strokeStyle=pal.sp;g.lineWidth=sp.r*2;g.lineCap="round";g.beginPath();g.moveTo(sp.cx-c,sp.cy-sn);g.lineTo(sp.cx+c,sp.cy+sn);g.stroke();
     g.fillStyle="#fff";g.beginPath();g.arc(sp.cx,sp.cy,5,0,6.28);g.fill();
   }
   [...order].reverse().forEach(i=>{const p=P[i];if(p.y<top-30||p.y>bot+30)return;marbleDot(p.x,p.y,RAD,marbles[i].color,i===leader)});
@@ -461,12 +554,12 @@ function drawPath(tl,t){
 }
 function idleDraw(){
   if(run)return;
-  g.setTransform(SC,0,0,SC,0,0);bgFill();
+  g.setTransform(SC,0,0,SC,0,0);bgFill(MAPS[$("map").value]&&$("mode").value==="race"?palFor($("map").value,$("seed").value):null);
   if(!songBuf){g.fillStyle="#fff";g.textAlign="center";g.font="bold 34px system-ui";g.fillText("Load a song",W/2,H/2-10);g.fillStyle="#8b8ba3";g.font="16px system-ui";g.fillText("then hit Race",W/2,H/2+22);g.textAlign="left";return}
   const len=Math.min(+$("len").value,songBuf.duration),n=marbles.length;
   if($("mode").value==="race"){
-    const key=$("seed").value+"|"+len;
-    if(idleKey!==key){idleCourse=buildCourse(len*340,$("seed").value);idleKey=key}
+    const key=$("seed").value+"|"+len+"|"+$("map").value;
+    if(idleKey!==key){idleCourse=buildCourse(len*340,$("seed").value,$("map").value);idleKey=key}
     const R0=rng(hashSeed($("seed").value+"|start")),P=[];
     for(let i=0;i<n;i++){const row=i%2,col=Math.floor(i/2),per=Math.ceil(n/2);P.push({x:70+(W-140)*((col+(row?.5:0)+R0()*.2)/Math.max(1,per-.5)),y:50+row*36})}
     drawRaceScene(idleCourse,P,300,0,0,[...Array(n).keys()],0,-1);drawHUD(P,[...Array(n).keys()],0,idleCourse,-1);
@@ -480,8 +573,7 @@ function drawCaption(t){
   const y=H*.5+40;g.strokeText(sl.text,W/2,y);g.fillStyle="#fff";g.fillText(sl.text,W/2,y);g.textAlign="left";
 }
 function frame(t){
-  g.setTransform(SC,0,0,SC,0,0);bgFill();
-  const tl=run.tl;
+  const tl=run.tl;g.setTransform(SC,0,0,SC,0,0);bgFill(tl.course?tl.course.pal:null);
   if(tl.kind==="path"){drawPath(tl,t);drawCaption(t);return}
   const n=tl.n,sim=tl.sim,f=Math.min(tl.F,Math.floor(t*FPS)),sf=tl.sf(f);
   const P=[];for(let i=0;i<n;i++)P.push({x:sim.pos[(sf*n+i)*2],y:sim.pos[(sf*n+i)*2+1]});
@@ -539,12 +631,60 @@ function speakWord(word,v,pitch,speed){
   while(a<b&&Math.abs(w.x[a])<.02)a++;while(b>a&&Math.abs(w.x[b])<.02)b--;
   return{x:w.x.subarray(Math.max(0,a-100),Math.min(w.x.length,b+200)),sr:w.sr};
 }
-// slots: one word per beat
-function computeSlots(beats,len,text){
-  const toks=text.split(/\s+/).filter(Boolean);if(!toks.length)return null;
-  let starts=[],last=-1;for(const b of [0.2,...beats]){if(b-last>=.26&&b<len-.3){starts.push(b);last=b}}
-  if(starts.length<6){starts=[];for(let t=.2;t<len-.3;t+=.45)starts.push(t)}
-  return starts.map((t0,i)=>({t0,t1:i+1<starts.length?starts[i+1]:len,text:toks[i%toks.length]}));
+function syllables(w){
+  w=w.toLowerCase().replace(/[^a-z]/g,"");if(!w)return 1;
+  const m=w.replace(/(?:[^laeiouy]es|ed|[^laeiouy]e)$/,"").replace(/^y/,"").match(/[aeiouy]{1,2}/g);
+  return Math.max(1,m?m.length:1);
+}
+// onsets in the vocal band (200-3500 Hz): where sung syllables start
+function vocalOnsets(s,len){
+  const sr=songBuf.sampleRate,ch=songBuf.getChannelData(0),a=Math.floor(s*sr),N=Math.floor(len*sr);
+  const hop=Math.floor(sr*.01),nh=Math.floor(N/hop),env=new Float32Array(nh);
+  const aL=1-Math.exp(-2*Math.PI*3500/sr),aH=1-Math.exp(-2*Math.PI*200/sr);let lp=0,hl=0;
+  for(let h=0;h<nh;h++){let e=0;for(let i=0;i<hop;i++){const x=ch[a+h*hop+i]||0;lp+=aL*(x-lp);hl+=aH*(lp-hl);const y=lp-hl;e+=y*y}env[h]=Math.log(1e-5+e/hop)}
+  const sm=new Float32Array(nh);
+  for(let i=0;i<nh;i++){let c=0,t=0;for(let j=-2;j<=2;j++){const k=i+j;if(k>=0&&k<nh){t+=env[k];c++}}sm[i]=t/c}
+  const flux=new Float32Array(nh);for(let i=4;i<nh;i++)flux[i]=Math.max(0,sm[i]-sm[i-4]);
+  const out=[],w=100;let last=-1;
+  for(let i=4;i<nh-1;i++){
+    const lo=Math.max(0,i-w),hi=Math.min(nh,i+w);let m=0,sd=0;
+    for(let k=lo;k<hi;k++)m+=flux[k];m/=(hi-lo);for(let k=lo;k<hi;k++)sd+=(flux[k]-m)**2;sd=Math.sqrt(sd/(hi-lo));
+    const t=i*.01;
+    if(flux[i]>m+.9*sd&&flux[i]>.15&&flux[i]>=flux[i-1]&&flux[i]>=flux[i+1]&&t-last>.13){out.push({t,w:flux[i]});last=t}
+  }
+  return out;
+}
+// Align lyric words to onsets: one onset per syllable, so words land where sung syllables start
+function computeSlots(beats,len,text,mode,s,off,loop){
+  let words=text.split(/\s+/).filter(Boolean);if(!words.length)return null;
+  let on=null;
+  if(mode==="auto"){on=vocalOnsets(s,len);if(on.length<4)on=null}
+  if(!on&&mode!=="even"){
+    on=[];let last=-1;for(const b of [0.2,...beats]){if(b-last>=.26&&b<len-.3){on.push({t:b,w:1});last=b}}
+    if(on.length<6)on=null;
+  }
+  if(!on){const n=Math.max(4,Math.floor((len-.8)/.42));on=[];for(let i=0;i<n;i++)on.push({t:.3+(len-.8)*i/(n-1),w:1})}
+  on=on.filter(o=>o.t<len-.3);
+  const sy=w=>syllables(w);
+  if(loop){const base=words.slice();let tot=words.reduce((a,w)=>a+sy(w),0),i=0;while(tot<on.length&&words.length<500){const w=base[i++%base.length];words.push(w);tot+=sy(w)}}
+  let S=words.reduce((a,w)=>a+sy(w),0);
+  while(on.length>S){let mi=0;for(let i=1;i<on.length;i++)if(on[i].w<on[mi].w)mi=i;on.splice(mi,1)}
+  while(on.length<S){
+    let gi=0,gm=-1;for(let i=0;i<on.length-1;i++){const g2=on[i+1].t-on[i].t;if(g2>gm){gm=g2;gi=i}}
+    if(gm<.26)break;on.splice(gi+1,0,{t:on[gi].t+gm/2,w:.5});
+  }
+  const slots=[];let k=0;
+  for(const w of words){
+    if(k>=on.length)break;
+    slots.push({t0:on[k].t+off,text:w});k+=sy(w);
+  }
+  const out=[];
+  for(let i=0;i<slots.length;i++){
+    const sl=slots[i];if(sl.t0<0||sl.t0>len-.25)continue;
+    const nxt=i+1<slots.length?slots[i+1].t0:sl.t0+.9;
+    sl.t1=Math.min(nxt,sl.t0+1.3,len);if(sl.t1-sl.t0<.12)sl.t1=sl.t0+.12;out.push(sl);
+  }
+  return out.length?out:null;
 }
 function melodyOffsets(s,len,slots){
   const ch=songBuf.getChannelData(0),sr=songBuf.sampleRate,D=4,dsr=sr/D,minL=Math.floor(dsr/450),maxL=Math.floor(dsr/90),WN=Math.floor(dsr*.12);
@@ -562,9 +702,11 @@ function melodyOffsets(s,len,slots){
 async function synthTrack(vkey,slots,offs,len){
   const v=VDEF[vkey],SR=22050,out=new Float32Array(Math.floor(len*SR));
   for(let i=0;i<slots.length;i++){
-    const sl=slots[i],pitch=v.pitch+offs[i]*v.mel,dur0=sl.t1-sl.t0;let spd=v.speed;
+    const sl=slots[i],pitch=v.pitch+offs[i]*v.mel,dur0=Math.min(1.3,sl.t1-sl.t0);let spd=v.speed;
     let w=speakWord(sl.text,v,pitch,spd);
-    if(w.x.length/w.sr>dur0*.92){spd=Math.min(215,spd*(w.x.length/w.sr)/(dur0*.85));w=speakWord(sl.text,v,pitch,spd)}
+    // stretch or squeeze each word to fill its slot so the singing sits on the vocal hits
+    const want=Math.max(75,Math.min(215,v.speed*(w.x.length/w.sr)/(dur0*.95)));
+    if(Math.abs(want-spd)>6){spd=want;w=speakWord(sl.text,v,pitch,spd)}
     const st=Math.floor(sl.t0*SR),ratio=w.sr/SR,n=Math.floor(w.x.length/ratio);
     for(let j=0;j<n&&st+j<out.length;j++){const p=j*ratio,i0=Math.floor(p),fr=p-i0;out[st+j]+=(w.x[i0]*(1-fr)+(w.x[i0+1]||0)*fr)*.9}
     if(i%10===9)await sleep();
@@ -586,7 +728,7 @@ async function voiceBuffer(m,s,len,vc){
   }
   let key,out,sr;
   if(vc.engine==="sing"){
-    key=`${songId}|sing|${m.preset}|${s}|${len}|${hashStr(vc.text)}|${vc.melody}`;
+    key=`${songId}|sing|${m.preset}|${s}|${len}|${vc.slotHash}|${vc.melody}`;
     if(voiceCache.has(key))return voiceCache.get(key);
     out=await synthTrack(m.preset,vc.slots,vc.offs,len);sr=22050;
   }else{
@@ -609,10 +751,11 @@ async function startRun(){
   const engine=$("engine").value,text=$("lyrics").value.trim();
   const vc={engine,text,melody:$("melody").checked,slots:null,offs:null,backing:null};
   if(engine==="sing"){
-    vc.slots=computeSlots(beats,len,text);
+    vc.slots=computeSlots(beats,len,text,$("syncmode").value,s,+$("syncoff").value,$("loop").checked);
     if(!vc.slots){setStatus("Add some lyrics first.");$("go").disabled=false;return}
-    setStatus("Reading the melody…");await sleep();
+    setStatus("Syncing lyrics to the song…");await sleep();
     vc.offs=vc.melody?melodyOffsets(s,len,vc.slots):vc.slots.map(()=>0);
+    vc.slotHash=hashStr(vc.slots.map(x=>x.t0.toFixed(2)+x.text).join("|"));
     vc.backing=backingBuf(s,len,$("novox").checked);
   }
   const bufs=[];
@@ -668,9 +811,10 @@ function stopRun(silent){
   run=null;$("go").disabled=!songBuf;$("stop").disabled=true;if(!silent)setStatus("Stopped.");idleDraw();
 }
 $("go").onclick=startRun;$("stop").onclick=()=>stopRun(false);
-["mode","winner","seed","len","start","engine"].forEach(id=>$(id).addEventListener("change",idleDraw));
+["mode","winner","seed","len","start","engine","map"].forEach(id=>$(id).addEventListener("change",idleDraw));
 $("seed").addEventListener("input",idleDraw);
 
+const mapSel=$("map");for(const k in MAPS)mapSel.add(new Option(MAPS[k].label,k));
 initMarbles();
 </script>
 </body>
