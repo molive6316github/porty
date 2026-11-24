@@ -140,8 +140,8 @@ textarea{width:100%;min-height:84px;background:#0e0e17;border:1px solid var(--li
 We are rolling down the hill and nobody can stop us now
 So cheer for your favourite one and watch them go go go</textarea>
         <div class="row" style="margin-top:8px"><button class="btn ghost sm" id="prevSync">▶ Preview sync</button><button class="btn ghost sm" id="tapSync">👆 Tap to sync</button><button class="btn ghost sm" id="aiSync">🤖 AI sync</button></div>
-        <label>AI model (English; downloads once, then cached by your browser)</label>
-        <select id="asrModel"><option value="Xenova/whisper-base.en">Better: base (~80 MB)</option><option value="Xenova/whisper-tiny.en">Faster: tiny (~40 MB)</option></select>
+        <label>AI model (English, ~41 MB, loads from this site, no outside servers)</label>
+        <select id="asrModel"><option value="Xenova/whisper-tiny.en">Whisper tiny (English)</option></select>
         <label class="chk"><input type="checkbox" id="loop"> Repeat lyrics (only if they're shorter than the section)</label>
         <label>Nudge: <span id="syncLbl">0.00</span>s (negative = earlier, positive = later)</label>
         <input type="range" id="syncoff" min="-0.6" max="0.6" step="0.02" value="0" oninput="document.getElementById('syncLbl').textContent=(+this.value).toFixed(2)">
@@ -854,10 +854,13 @@ async function segment16k(s0,len){
 async function loadASR(model){
   if(asrPipe&&asrModelLoaded===model)return asrPipe;
   setStatus("Loading AI library…");
-  const T=await import("https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2");
-  T.env.allowLocalModels=false;
-  asrPipe=await T.pipeline("automatic-speech-recognition",model,{progress_callback:p=>{
-    if(p.status==="progress")setStatus(`Downloading AI model… ${Math.round(p.progress)}% (first time only)`);
+  // everything is served from this site's own /ai folder, so no CDN or Hugging Face is needed
+  const base=new URL("ai/",location.href).href;
+  const T=await import(base+"transformers.min.js");
+  T.env.allowRemoteModels=false;T.env.allowLocalModels=true;T.env.localModelPath=base+"models/";
+  T.env.backends.onnx.wasm.wasmPaths=base;T.env.backends.onnx.wasm.numThreads=1;
+  asrPipe=await T.pipeline("automatic-speech-recognition",model,{quantized:true,progress_callback:p=>{
+    if(p.status==="progress")setStatus(`Loading AI model… ${Math.round(p.progress)}%`);
     else if(p.status==="ready")setStatus("AI model ready.")}});
   asrModelLoaded=model;return asrPipe;
 }
@@ -894,7 +897,7 @@ async function runAI(){
     setStatus(`AI sync: matched ${res.matched} of ${words.length} words (the rest are placed between them). Hit Preview sync to check.`);
     return true;
   }catch(e){
-    setStatus("AI sync failed: "+(e&&e.message||e)+". It needs internet access to cdn.jsdelivr.net and huggingface.co. Using phrase mode instead.");
+    setStatus("AI sync failed: "+(e&&e.message||e)+". Open Marbeat from its web address (not by double-clicking the file) so it can load the AI files. Using phrase mode instead.");
     $("syncmode").value="phrase";return false;
   }
 }
