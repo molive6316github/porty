@@ -20,3 +20,14 @@ The character voices are original archetypes, not clones of any real person's or
 
 It must be loaded over http(s) (e.g. the Vercel deploy), not by double-clicking `index.html`, because browsers
 block loading model files from `file://`.
+
+## Neural voices (Piper, fully local)
+`marbeat/ai/piper/` holds a local neural text-to-speech stack, so no CDN is used:
+- `en_GB-vctk-medium.onnx` (+ `.json`): Piper VITS voice, 109 speakers (CSTR VCTK corpus, CC BY 4.0), ~77 MB
+- `piper-phonemize.mjs`, `piper_phonemize.wasm/.data`: espeak-ng phonemizer (GPL)
+- `ort.wasm.min.js`, `ort-wasm*.wasm`: onnxruntime-web 1.18 (MIT)
+- `piper.js`: small loader
+
+Each word is synthesized in a character's speaker voice, time-stretched (WSOLA) to fit its slot, retuned to the
+song's melody, given light vibrato on held notes, then run through the character effect. Only the words a marble
+actually sings (while it leads) are synthesized. "Robot voices" (eSpeak) remains as a light fallback.
