@@ -341,6 +341,10 @@ func (a *App) api(w http.ResponseWriter, r *http.Request, name string) {
 		json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 		go func() { time.Sleep(200 * time.Millisecond); close(a.quit) }()
 	default:
+		if strings.HasPrefix(name, "api/") {
+			a.apiV2(w, r, strings.TrimPrefix(name, "api/"))
+			return
+		}
 		http.NotFound(w, r)
 	}
 }

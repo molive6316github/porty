@@ -15,6 +15,19 @@ Double-click it and Marbeat opens in its own window (Edge or Chrome in "app mode
 
 Everything lives in `%LOCALAPPDATA%\Marbeat` (cache in `app\`, browser profile in `profile\`, `launcher.log`). To uninstall: delete `Marbeat.exe` and that folder.
 
+## What the app saves (the library)
+The web page talks to the launcher on `/__marbeat/api/` (needs a per-run token; requests from other websites are refused):
+- **Characters, tournaments, settings** -> `%LOCALAPPDATA%\Marbeat\library\store\*.json`
+- **Voice samples** (for cloned voices) -> `...\library\blobs\`
+- **Finished videos** -> `%USERPROFILE%\Videos\Marbeat\<tournament name>\Round1-Heat2-Poppy-Milo.mp4` (never overwrites; names are made safe for Windows)
+On the plain website the same features work, saved in the browser's own storage instead.
+
+## Characters and tournaments
+- **Characters** keep name, colour, voice (preset or your own cloned sample) and a win record (races, wins, podiums, titles).
+- **Tournaments:** pick characters, marbles per heat (2-8), how many advance, map. Heats are raced for real; results come from the physics.
+  Rounds are built automatically until one final heat; the winner is champion. **Run all remaining heats** renders and saves every heat video unattended;
+  Stop halts it, and pressing Run again resumes where it stopped.
+
 ## Shipping an update (what you do)
 ```bash
 # 1. change anything in marbeat/

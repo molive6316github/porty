@@ -62,6 +62,21 @@ textarea{width:100%;min-height:84px;background:#0e0e17;border:1px solid var(--li
 .marble .clone input{flex:1;min-width:0}
 .marble .clone button{background:#0e0e17;border:1px solid var(--line);color:var(--mut);border-radius:6px;cursor:pointer}
 .marble .clone .tag2{color:#5be39b}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:start}
+@media(max-width:900px){.grid2{grid-template-columns:1fr}}
+.char{display:grid;grid-template-columns:34px 1fr 128px;gap:6px;align-items:center;padding:8px 0;border-top:1px solid var(--line)}
+.char:first-child{border-top:0}
+.char input[type=color]{width:34px;height:34px;border:0;padding:0;background:none}
+.char .meta{grid-column:1/4;font-size:11px;color:var(--mut);display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.char .meta button{background:#0e0e17;border:1px solid var(--line);color:var(--tx);border-radius:7px;padding:4px 8px;cursor:pointer;font-size:11px}
+.bracket{display:flex;gap:14px;overflow-x:auto;padding:6px 2px 12px}
+.round{min-width:230px;flex:0 0 auto}.round h4{margin:0 0 8px;font-size:13px;color:var(--mut);letter-spacing:.06em;text-transform:uppercase}
+.heat{background:#0e0e17;border:1px solid var(--line);border-radius:12px;padding:10px;margin-bottom:10px;font-size:13px}
+.heat.done{opacity:.92}.heat.next{border-color:var(--ac)}
+.heat .ent{display:flex;align-items:center;gap:6px;padding:2px 0}.heat .dot{width:10px;height:10px;border-radius:50%;flex:0 0 auto}
+.heat .btns{display:flex;gap:6px;margin-top:8px}
+.champ{background:linear-gradient(90deg,#ffd34d33,#ff4d8d33);border:1px solid #ffd34d;border-radius:12px;padding:12px;margin:8px 0;font-weight:700}
+.tchips{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0}.tchips label{display:flex;gap:5px;align-align:center;background:#0e0e17;border:1px solid var(--line);border-radius:99px;padding:4px 10px;font-size:12px;color:var(--tx);margin:0}
 </style>
 </head>
 <body>
@@ -108,6 +123,7 @@ textarea{width:100%;min-height:84px;background:#0e0e17;border:1px solid var(--li
       <label style="display:flex;gap:8px;align-items:center;margin:0"><input type="checkbox" id="rec"> Also record the preview (quick, lower quality)</label>
       <div id="status">Load a song to begin.</div>
       <a id="dl" class="btn" style="display:none">⬇ Download video</a>
+      <button class="btn ghost sm" id="openSaved" style="display:none">📂 Show in folder</button>
       <video id="rvid" controls playsinline style="display:none;width:100%;max-width:360px;border-radius:12px;background:#000"></video>
       <details style="width:100%;max-width:360px;font-size:12px;color:var(--mut)"><summary>Diagnostics (what is it doing?)</summary>
         <pre id="diagLog" style="white-space:pre-wrap;max-height:200px;overflow:auto;margin:6px 0;font-size:11px"></pre>
@@ -192,6 +208,28 @@ So cheer for your favourite one and watch them go go go</textarea>
       </div>
     </div>
   </div>
+</section>
+
+<section id="league">
+  <h2>Characters &amp; Tournaments</h2>
+  <p class="sub" id="leagueSub">Keep recurring characters (name, colour, voice, cloned voice sample) and their win records, then run elimination tournaments with them. <span id="leagueWhere"></span></p>
+  <div class="grid2">
+    <div class="panel">
+      <h3>Characters</h3>
+      <div class="row" style="margin-bottom:8px"><button class="btn ghost sm" id="rosterNew">+ New character</button><button class="btn ghost sm" id="rosterFromRace">💾 Save the current marbles</button></div>
+      <div id="rosterList"></div>
+    </div>
+    <div class="panel">
+      <h3>New tournament</h3>
+      <label>Name</label><input type="text" id="tName" placeholder="e.g. Voice Cup 1" maxlength="40">
+      <label>Who is in it (pick at least 2 characters)</label><div class="tchips" id="tChips"></div>
+      <div class="row"><div><label>Marbles per heat</label><select id="tHeat"></select></div><div><label>Advance from each heat</label><select id="tAdv"></select></div></div>
+      <div class="row"><div><label>Map</label><select id="tMap"></select></div><div><label>Seed</label><input type="text" id="tSeed" value="cup1"></div></div>
+      <button class="btn" id="tCreate" style="margin-top:10px;width:100%">Create tournament</button>
+      <p class="note" style="margin-top:8px">Needs a song loaded (the Studio's song and section are used for every heat). Results come from what really happens in each race.</p>
+    </div>
+  </div>
+  <div class="panel" style="margin-top:14px"><h3>Tournaments</h3><select id="tPick"></select><div id="tView"></div></div>
 </section>
 
 <section id="formats">
@@ -281,9 +319,10 @@ function initMarbles(){
   const box=$("marbles");box.innerHTML="";
   marbles.forEach(m=>{
     const d=document.createElement("div");d.className="marble";
-    d.innerHTML=`<input type="color" value="${m.color}"><input type="text" value="${m.name}" maxlength="14"><select>${VKEYS.map(k=>`<option value="${k}" ${k===m.preset?"selected":""}>${VOICES[k]}</option>`).join("")}</select><input class="file" type="file" accept="audio/*" title="Optional: own audio for this marble"><div class="clone"><span>🎤 Clone a voice:</span><input type="file" accept="audio/*" title="Upload 5-15 seconds of one person talking"><button title="Remove cloned voice" style="display:none">✕</button></div>`;
+    d.innerHTML=`<input type="color" value="${m.color}"><input type="text" value="${m.name}" maxlength="14"><select>${VKEYS.map(k=>`<option value="${k}" ${k===m.preset?"selected":""}>${VOICES[k]}</option>`).join("")}</select><input class="file" type="file" accept="audio/*" title="Optional: own audio for this marble"><div class="clone"><span>🎤 Clone a voice:</span><input type="file" accept="audio/*" title="Upload 5-15 seconds of one person talking"><button title="Remove cloned voice" style="display:none">✕</button><button class="sv" title="Save this marble as a character">💾</button></div>`;
     const [c,t,s,f,cl]=d.children;
-    const clIn=cl.querySelector("input"),clX=cl.querySelector("button"),clTxt=cl.querySelector("span");
+    const clIn=cl.querySelector("input"),clX=cl.querySelector("button"),clTxt=cl.querySelector("span"),clSave=cl.querySelector("button.sv");
+    clSave.onclick=()=>saveMarbleToRoster(m);
     if(m.clone){clTxt.innerHTML='<span class="tag2">🎤 '+m.clone.fname+'</span>';clX.style.display='';s.disabled=true}
     c.oninput=()=>{m.color=c.value;idleDraw()};
     t.oninput=()=>{m.name=t.value||"?";fillWinner();renderDir();idleDraw()};
@@ -297,7 +336,7 @@ function initMarbles(){
         const name="v"+Math.random().toString(36).slice(2,8);
         const a24=pr.audio.slice();let encoded=false;
         if($("engine").value!=="cover"){await cloneEncode(name,pr.audio);encoded=true} // Cover mode doesn't need the text-to-speech models
-        m.clone={name,f0:pr.f0,fname:file.name.slice(0,22),a16:pr.a16,a24,encoded};
+        m.clone={name,f0:pr.f0,fname:file.name.slice(0,22),a16:pr.a16,a24,encoded,file};
         setStatus(`Voice cloned for ${m.name} (${pr.f0?Math.round(pr.f0)+" Hz":"pitch unknown"}). It sings whenever ${m.name} leads.`);
         initMarbles();
       })}catch(e){setStatus(e&&e.message==="cancelled"?"Cancelled.":"Cloning failed: "+(e&&e.message||e)+". Open Marbeat from its web address, not the file.");clIn.value=""}
@@ -1829,14 +1868,21 @@ async function renderVideoFile(prep,quality,tStart){
   await venc.flush();venc.close();if(encErr)throw encErr;
   flushAudio(1e9);muxer.finalize();
   const blob=new Blob([target.buffer],{type:container==="mp4"?"video/mp4":"video/webm"});
-  const url=URL.createObjectURL(blob),dl=$("dl"),vid=$("rvid");
+  let savedMsg="";lastSaved="";
+  if(Store.inApp){ // the Windows app saves straight into the Marbeat folder
+    const stamp=new Date().toISOString().slice(0,19).replace(/[:T]/g,"-"),fname=(renderMeta&&renderMeta.name||"marbeat-"+stamp)+"."+container;
+    try{const sv=await Store.exportVideo(blob,fname,renderMeta&&renderMeta.folder||"");lastSaved=sv.path;savedMsg=" Saved to "+sv.path}catch(e){savedMsg=" (couldn't save to the Marbeat folder: "+e.message+")"}
+  }
+  const url=URL.createObjectURL(blob),dl=$("dl"),vid=$("rvid");$("openSaved").style.display=lastSaved?"inline-block":"none";
   dl.href=url;dl.download="marbeat-hd."+container;dl.textContent="⬇ Download HD video ("+(blob.size/1e6).toFixed(1)+" MB)";dl.style.display="inline-block";
   vid.src=url;vid.style.display="block";
   const desc=`${P.w}×${P.h} @ ${P.fps} fps, ${container.toUpperCase()} (${vsel.k==="avc"?"H.264":"VP9"} + ${akind==="aac"?"AAC":"Opus"})`;
   logLine("RENDER DONE "+desc+" "+(blob.size/1e6).toFixed(1)+" MB in "+fmt((Date.now()-tStart)/1000));
-  setStatus(`Render done: ${desc}, ${(blob.size/1e6).toFixed(1)} MB, took ${fmt((Date.now()-tStart)/1000)}.`+(container==="webm"?" (WebM: this browser can't make MP4 with AAC.)":""));
+  setStatus(`Render done: ${desc}, ${(blob.size/1e6).toFixed(1)} MB, took ${fmt((Date.now()-tStart)/1000)}.`+(container==="webm"?" (WebM: this browser can't make MP4 with AAC.)":"")+savedMsg);
+  if(raceHook&&tl.kind==="race")fireHook({order:finishOrder(tl),how:"render"});
 }
 $("render").onclick=renderHD;
+$("openSaved").onclick=()=>{if(lastSaved)Store.api("open",{method:"POST",body:JSON.stringify({path:lastSaved})}).catch(e=>setStatus(e.message))};
 
 // ================= SYNC TOOLS: tap to sync + preview =================
 let aux=null; // {kind:'tap'|'prev', src, t0, len, raf, ...}
@@ -2004,6 +2050,7 @@ function finishRec(r,mt){
 }
 function endRun(){
   if(!run)return;lastRun=run;cancelAnimationFrame(run.raf);
+  if(raceHook&&lastRun.tl&&lastRun.tl.kind==="race")fireHook({order:finishOrder(lastRun.tl),how:"preview"});
   try{run.srcs.forEach(s=>s.stop())}catch(e){}
   const r=run.rec;if(r&&r.state!=="inactive")r.stop();else setStatus("Done.");
   run=null;$("go").disabled=false;$("stop").disabled=true;
@@ -2016,7 +2063,7 @@ function stopRun(silent){
 }
 $("copyLog").onclick=async()=>{const t=LOG.join("\n");try{await navigator.clipboard.writeText(t);setStatus("Log copied.")}catch(e){const el=$("diagLog");el.textContent=t}};
 $("engine").addEventListener("change",()=>{$("coverBox").style.display=$("engine").value==="cover"?"block":"none"});
-$("go").onclick=startRun;$("stop").onclick=()=>{if(busyAt)prepAbort=true;stopAux(true);stopRun(false)};
+$("go").onclick=startRun;$("stop").onclick=()=>{leagueAbort=true;if(busyAt)prepAbort=true;stopAux(true);stopRun(false);fireHook(null)};
 ["mode","winner","seed","len","start","engine","map"].forEach(id=>$(id).addEventListener("change",idleDraw));
 $("seed").addEventListener("input",idleDraw);
 
@@ -2028,6 +2075,181 @@ setInterval(()=>{
 window.addEventListener("error",e=>{logLine("ERROR: "+(e.message||e));});
 window.addEventListener("unhandledrejection",e=>{const m=e.reason&&e.reason.message||String(e.reason);logLine("ERROR: "+m);if(m!=="cancelled"){busyAt=0;setStatus("Something failed: "+m+". See Diagnostics below.");$("go").disabled=!songBuf;$("stop").disabled=true}});
 logLine("Marbeat ready · base "+APP_BASE+" · cores "+(navigator.hardwareConcurrency||"?")+" · memory "+(navigator.deviceMemory||"?")+" GB");
+// ================= LIBRARY: saving things (the Windows app writes real files; the website uses this browser's storage) =================
+function idb(){return new Promise((res,rej)=>{const r=indexedDB.open("marbeat",1);r.onupgradeneeded=()=>r.result.createObjectStore("blobs");r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)})}
+async function idbDo(mode,fn){const db=await idb();return new Promise((res,rej)=>{const tx=db.transaction("blobs",mode),st=tx.objectStore("blobs"),rq=fn(st);tx.oncomplete=()=>res(rq&&rq.result);tx.onerror=()=>rej(tx.error)})}
+const Store={
+  inApp:false,token:"",info:null,
+  async init(){
+    try{const r=await fetch("/__marbeat/ping",{cache:"no-store"});if(!r.ok)return;const j=await r.json();if(j.app!=="marbeat-launcher")return;
+      this.token=(await (await fetch("/__marbeat/api/token",{cache:"no-store"})).json()).token;this.inApp=true;this.info=await this.api("info")}catch(e){}
+  },
+  hdr(h){return{"X-Marbeat-Token":this.token,...(h||{})}},
+  async api(path,opt){const r=await fetch("/__marbeat/api/"+path,{...opt,headers:this.hdr(opt&&opt.headers)});if(!r.ok)throw new Error(path.split("?")[0]+" failed ("+r.status+")");return(r.headers.get("content-type")||"").includes("json")?r.json():r},
+  async get(key,def){
+    if(this.inApp){const j=await this.api("store/"+key);return j.value===null||j.value===undefined?def:j.value}
+    try{const v=localStorage.getItem("mb_"+key);return v?JSON.parse(v):def}catch(e){return def}
+  },
+  async set(key,val){if(this.inApp){await this.api("store/"+key,{method:"PUT",body:JSON.stringify(val)});return}localStorage.setItem("mb_"+key,JSON.stringify(val))},
+  async putBlob(id,blob){if(this.inApp){await this.api("blob/"+id,{method:"PUT",body:blob});return}await idbDo("readwrite",st=>st.put(blob,id))},
+  async getBlob(id){if(this.inApp){const r=await fetch("/__marbeat/api/blob/"+id,{headers:this.hdr()});return r.ok?r.blob():null}return(await idbDo("readonly",st=>st.get(id)))||null},
+  async delBlob(id){if(this.inApp){await this.api("blob/"+id,{method:"DELETE"});return}await idbDo("readwrite",st=>st.delete(id))},
+  // finished videos: the app saves them straight into the Marbeat folder; the website downloads them
+  async exportVideo(blob,name,folder){if(this.inApp)return this.api("export?name="+encodeURIComponent(name)+"&folder="+encodeURIComponent(folder||""),{method:"POST",body:blob});return null}
+};
+const uid=p=>p+Math.random().toString(36).slice(2,9);
+let roster=[],tournaments=[],selTour="",raceHook=null,renderMeta=null,leagueAbort=false,lastSaved="";
+const saveRoster=()=>Store.set("roster",{chars:roster}),saveTournaments=()=>Store.set("tournaments",{list:tournaments});
+const charById=id=>roster.find(c=>c.id===id);
+async function loadLibrary(){
+  await Store.init();
+  try{roster=(await Store.get("roster",{chars:[]})).chars||[];tournaments=(await Store.get("tournaments",{list:[]})).list||[]}catch(e){logLine("library load failed: "+e.message)}
+  $("leagueWhere").textContent=Store.inApp?"Saved on this PC in "+(Store.info&&Store.info.dataDir||"the app folder")+".":"Saved in this browser (the Windows app saves real files).";
+  if(!selTour&&tournaments.length)selTour=tournaments[tournaments.length-1].id;
+  renderRoster();renderTourForm();renderTournaments();
+}
+// ---------- characters ----------
+function newChar(p){return{id:uid("c"),name:"New character",color:COLORS[roster.length%COLORS.length],preset:VKEYS[roster.length%VKEYS.length],sampleName:"",stats:{races:0,wins:0,podiums:0,titles:0},...p}}
+async function applyChar(m,c){ // make a marble in the race into this character
+  m.name=c.name;m.color=c.color;m.preset=c.preset;m.charId=c.id;m.clone=null;
+  if(c.sampleName){
+    const b=await Store.getBlob("smp_"+c.id);
+    if(b){try{const pr=await prepClone(new File([b],c.sampleName));m.clone={name:uid("v"),f0:pr.f0,fname:c.sampleName,a16:pr.a16,a24:pr.audio.slice(),encoded:false,file:b}}catch(e){logLine("sample for "+c.name+" couldn't be read: "+e.message)}}
+  }
+}
+async function addCharToRace(c){
+  let i=marbles.findIndex(m=>m.charId===c.id);
+  if(i<0){if(marbles.length<8){$("count").value=marbles.length+1;initMarbles();i=marbles.length-1}else i=marbles.length-1}
+  await applyChar(marbles[i],c);initMarbles();setStatus(c.name+" is in the race.");
+}
+async function saveMarbleToRoster(m){
+  const c=m.charId&&charById(m.charId)||newChar({});
+  c.name=m.name;c.color=m.color;c.preset=m.preset;
+  if(m.clone&&m.clone.file){await Store.putBlob("smp_"+c.id,m.clone.file);c.sampleName=m.clone.fname||"voice sample"}
+  if(!charById(c.id))roster.push(c);m.charId=c.id;await saveRoster();renderRoster();renderTourForm();setStatus(c.name+" saved to Characters.");
+}
+function renderRoster(){
+  const box=$("rosterList");box.innerHTML="";
+  if(!roster.length){box.innerHTML='<p class="note">No characters yet. Add one, or save your current marbles with the button above (or the 💾 under any marble).</p>';return}
+  for(const c of roster){
+    const d=document.createElement("div");d.className="char";
+    d.innerHTML=`<input type="color" value="${c.color}"><input type="text" value="${c.name.replace(/"/g,"&quot;")}" maxlength="14"><select>${VKEYS.map(k=>`<option value="${k}" ${k===c.preset?"selected":""}>${VOICES[k]}</option>`).join("")}</select>
+      <div class="meta"><span>${c.stats.races} races · ${c.stats.wins} wins · ${c.stats.podiums} podiums · ${c.stats.titles} 🏆</span><span>${c.sampleName?"🎤 "+c.sampleName:"no voice sample"}</span>
+      <button data-a="smp">🎤 ${c.sampleName?"Replace":"Add"} sample</button><button data-a="race">→ Add to race</button><button data-a="del">Delete</button><input type="file" accept="audio/*" style="display:none"></div>`;
+    const [col,nm,sel]=d.children,fi=d.querySelector('input[type=file]');
+    col.onchange=async()=>{c.color=col.value;await saveRoster()};nm.onchange=async()=>{c.name=nm.value.trim()||"?";await saveRoster();renderTourForm();renderTournaments()};sel.onchange=async()=>{c.preset=sel.value;await saveRoster()};
+    d.querySelector('[data-a=smp]').onclick=()=>fi.click();
+    fi.onchange=async()=>{if(!fi.files[0])return;try{await Store.putBlob("smp_"+c.id,fi.files[0]);c.sampleName=fi.files[0].name.slice(0,26);await saveRoster();renderRoster();setStatus("Voice sample saved for "+c.name+".")}catch(e){setStatus("Couldn't save the sample: "+e.message)}};
+    d.querySelector('[data-a=race]').onclick=()=>addCharToRace(c);
+    d.querySelector('[data-a=del]').onclick=async()=>{if(!confirm("Delete "+c.name+"? Tournaments that used them keep their past results."))return;roster=roster.filter(x=>x!==c);try{await Store.delBlob("smp_"+c.id)}catch(e){}await saveRoster();renderRoster();renderTourForm();renderTournaments()};
+    box.appendChild(d);
+  }
+}
+$("rosterNew").onclick=async()=>{roster.push(newChar({}));await saveRoster();renderRoster();renderTourForm()};
+$("rosterFromRace").onclick=async()=>{for(const m of marbles)await saveMarbleToRoster(m);setStatus("Saved "+marbles.length+" marbles to Characters.")};
+// ---------- tournaments ----------
+function renderTourForm(){
+  const chips=$("tChips"),keep=new Set([...chips.querySelectorAll("input:checked")].map(i=>i.value));
+  chips.innerHTML=roster.length?"":'<span class="note">Add characters first.</span>';
+  for(const c of roster){const l=document.createElement("label");l.innerHTML=`<input type="checkbox" value="${c.id}" ${keep.has(c.id)?"checked":""}><span style="color:${c.color}">●</span> ${c.name}`;chips.appendChild(l)}
+  const hs=$("tHeat"),ad=$("tAdv");
+  const fillAdv=()=>{const v=ad.value;ad.innerHTML="";for(let i=1;i<+hs.value;i++)ad.add(new Option(i,i));ad.value=Math.min(+v||2,+hs.value-1)};
+  if(!hs.options.length){for(let i=2;i<=8;i++)hs.add(new Option(i,i));hs.value=4;hs.onchange=fillAdv}
+  fillAdv();
+  const mp=$("tMap");if(!mp.options.length){mp.add(new Option("Random for every heat","random"));for(const k in MAPS)mp.add(new Option(MAPS[k].label,k))}
+}
+function makeHeats(ids,t,rnd){
+  const R=rng(hashSeed(t.seed+"|r"+rnd)),a=ids.slice();for(let i=a.length-1;i>0;i--){const j=Math.floor(R()*(i+1));[a[i],a[j]]=[a[j],a[i]]}
+  const n=a.length<=t.heatSize?1:Math.ceil(a.length/t.heatSize),base=Math.floor(a.length/n),extra=a.length%n,heats=[];let p=0;
+  const keys=Object.keys(MAPS);
+  for(let h=0;h<n;h++){const sz=base+(h<extra?1:0);heats.push({id:`r${rnd}h${h+1}`,entrants:a.slice(p,p+sz),seed:`${t.seed}-r${rnd}h${h+1}`,map:t.map==="random"?keys[Math.floor(R()*keys.length)]:t.map,result:null});p+=sz}
+  return heats;
+}
+$("tCreate").onclick=async()=>{
+  const ids=[...$("tChips").querySelectorAll("input:checked")].map(i=>i.value);
+  if(ids.length<2){setStatus("Pick at least 2 characters for a tournament.");return}
+  const t={id:uid("t"),name:$("tName").value.trim()||"Tournament "+(tournaments.length+1),created:Date.now(),heatSize:Math.min(+$("tHeat").value,8),advance:Math.min(+$("tAdv").value,+$("tHeat").value-1),map:$("tMap").value,seed:$("tSeed").value.trim()||"cup",participants:ids,rounds:[],champion:null};
+  t.rounds.push({n:1,heats:makeHeats(ids,t,1)});tournaments.push(t);selTour=t.id;await saveTournaments();renderTournaments();setStatus(`Created "${t.name}": ${ids.length} characters, ${t.rounds[0].heats.length} heat(s) in round 1.`);
+  $("tView").scrollIntoView({behavior:"smooth"});
+};
+const roundLabel=(t,r)=>r.heats.length===1?"Final":"Round "+r.n;
+function nextHeat(t){for(const r of t.rounds)for(const h of r.heats)if(!h.result)return{round:r,heat:h};return null}
+function advanceTournament(t){
+  const r=t.rounds[t.rounds.length-1];if(!r.heats.every(h=>h.result))return;
+  if(r.heats.length===1){t.champion=r.heats[0].result.order[0];t.finished=Date.now();const c=charById(t.champion);if(c)c.stats.titles++;return}
+  const adv=[];for(const h of r.heats)adv.push(...h.result.order.slice(0,Math.min(t.advance,h.entrants.length-1)));
+  t.rounds.push({n:r.n+1,heats:makeHeats(adv,t,r.n+1)});
+}
+async function recordHeat(t,heat,order){
+  const ranked=order.map(i=>heat.entrants[i]);heat.result={order:ranked,when:Date.now()};
+  heat.entrants.forEach(id=>{const c=charById(id);if(c)c.stats.races++});
+  const w=charById(ranked[0]);if(w)w.stats.wins++;ranked.slice(0,3).forEach(id=>{const c=charById(id);if(c)c.stats.podiums++});
+  advanceTournament(t);await saveRoster();await saveTournaments();renderRoster();renderTournaments();
+}
+function renderTournaments(){
+  const pick=$("tPick");pick.innerHTML="";if(!tournaments.length){pick.style.display="none";$("tView").innerHTML='<p class="note">No tournaments yet. Create one above.</p>';return}
+  pick.style.display="";for(const t of tournaments)pick.add(new Option(t.name+(t.champion?" 🏆":""),t.id));
+  if(!tournaments.some(t=>t.id===selTour))selTour=tournaments[tournaments.length-1].id;pick.value=selTour;pick.onchange=()=>{selTour=pick.value;renderTournaments()};
+  const t=tournaments.find(x=>x.id===selTour),nx=nextHeat(t);
+  const chip=id=>{const c=charById(id);return c?{n:c.name,col:c.color}:{n:"(deleted)",col:"#888"}};
+  let h=`<div style="margin:8px 0;color:var(--mut);font-size:13px">${t.participants.length} characters · heats of ${t.heatSize}, top ${t.advance} advance · seed ${t.seed}</div>`;
+  if(t.champion){const c=chip(t.champion);h+=`<div class="champ">🏆 Champion: <span style="color:${c.col}">${c.n}</span></div>`}
+  h+=`<div class="row" style="margin-bottom:8px"><button class="btn sm" id="tRunAll" ${nx?"":"disabled"}>▶ Run all remaining heats (render &amp; save)</button><button class="btn ghost sm" id="tDel">Delete tournament</button></div><div class="bracket">`;
+  for(const r of t.rounds){
+    h+=`<div class="round"><h4>${roundLabel(t,r)}</h4>`;
+    r.heats.forEach((ht,k)=>{
+      const isNext=nx&&nx.heat===ht;
+      h+=`<div class="heat ${ht.result?"done":""} ${isNext?"next":""}"><b>Heat ${k+1}</b> <span style="color:var(--mut)">· ${MAPS[ht.map]?MAPS[ht.map].label.split("·")[0].trim():ht.map}</span>`;
+      const list=ht.result?ht.result.order:ht.entrants;
+      list.forEach((id,i)=>{const c=chip(id);h+=`<div class="ent"><span class="dot" style="background:${c.col}"></span>${ht.result?["🥇","🥈","🥉"][i]||(i+1)+".":""} ${c.n}</div>`});
+      if(!ht.result)h+=`<div class="btns"><button class="btn ghost sm" data-heat="${ht.id}" data-mode="preview" ${isNext?"":"disabled"}>▶ Preview</button><button class="btn sm" data-heat="${ht.id}" data-mode="render" ${isNext?"":"disabled"}>🎬 Render</button></div>`;
+      h+=`</div>`;
+    });
+    h+=`</div>`;
+  }
+  h+=`</div>`;$("tView").innerHTML=h;
+  $("tView").querySelectorAll("[data-heat]").forEach(b=>b.onclick=async()=>{const ht=t.rounds.flatMap(r=>r.heats).find(x=>x.id===b.dataset.heat);await runHeat(t,ht,b.dataset.mode)});
+  const ra=$("tRunAll");if(ra)ra.onclick=()=>runAll(t);
+  $("tDel").onclick=async()=>{if(!confirm('Delete the tournament "'+t.name+'"? (Character stats stay.)'))return;tournaments=tournaments.filter(x=>x!==t);await saveTournaments();renderTournaments()};
+}
+// ---------- running a heat ----------
+function fireHook(res){const h=raceHook;raceHook=null;if(h)h(res)}
+function finishOrder(tl){ // marble indexes, first place to last, from what really happened in the physics
+  const sim=tl.sim,n=tl.n,last=sim.F-1,y=i=>sim.pos[(last*n+i)*2+1];
+  return[...Array(n).keys()].sort((a,b)=>{const fa=sim.fins[a],fb=sim.fins[b];if(fa>=0&&fb>=0)return fa-fb;if(fa>=0)return-1;if(fb>=0)return 1;return y(b)-y(a)});
+}
+async function setupHeat(t,heat,roundName,k){
+  $("count").value=heat.entrants.length;initMarbles();
+  for(let i=0;i<heat.entrants.length;i++){const c=charById(heat.entrants[i]);if(c)await applyChar(marbles[i],c);else{marbles[i].charId=null}}
+  initMarbles();
+  $("seed").value=heat.seed;$("map").value=heat.map;$("winner").value="-1";dirKeys=[];renderDir();$("mode").value="race";
+  $("vtitle").value=`${t.name} · ${roundName} · Heat ${k}`;
+  idleDraw();
+}
+async function runHeat(t,heat,mode){
+  if(!songBuf){setStatus("Load a song first: the tournament uses the Studio's song and section for every heat.");return false}
+  if(busyAt){setStatus("Wait for the current step to finish, or press Stop.");return false}
+  const r=t.rounds.find(r=>r.heats.includes(heat)),k=r.heats.indexOf(heat)+1,rn=roundLabel(t,r);
+  await setupHeat(t,heat,rn,k);
+  const res=new Promise(rs=>{raceHook=rs});
+  renderMeta={folder:t.name,name:`${rn.replace(" ","")}-Heat${k}-${heat.entrants.map(id=>(charById(id)||{name:"x"}).name).join("-")}`};
+  window.scrollTo({top:document.getElementById("studio").offsetTop-60,behavior:"smooth"});
+  if(mode==="render"){await renderHD();fireHook(null)} // the render has finished (the result already arrived) or failed
+  else{await startRun();if(!run)fireHook(null)}      // a preview is still playing: its result arrives when the race ends
+  const out=await res;renderMeta=null;
+  if(!out){setStatus("Heat not finished, so no result was recorded.");return false}
+  await recordHeat(t,heat,out.order);
+  const w=charById(heat.result.order[0]);setStatus(`${rn} Heat ${k} done: ${w?w.name:"?"} wins.`+(t.champion?` 🏆 ${charById(t.champion).name} is the champion!`:""));
+  return true;
+}
+async function runAll(t){
+  leagueAbort=false;let n=0;
+  while(!leagueAbort){const nx=nextHeat(t);if(!nx)break;
+    const ok=await runHeat(t,nx.heat,"render");if(!ok)break;n++;await sleep().catch(()=>{});
+  }
+  setStatus(t.champion?`Tournament finished: 🏆 ${charById(t.champion).name}. ${n} heat video(s) rendered.`:`Stopped after ${n} heat(s).`);
+}
+
 (async()=>{ // the Windows app talks to its launcher on this same address; on the website these calls simply fail
   $("getApp").href=APP_BASE+"download/Marbeat.exe";
   let info;try{const r=await fetch("/__marbeat/ping",{cache:"no-store"});if(!r.ok)return;info=await r.json();if(info.app!=="marbeat-launcher")return}catch(e){return}
@@ -2048,6 +2270,7 @@ logLine("Marbeat ready · base "+APP_BASE+" · cores "+(navigator.hardwareConcur
 })();
 const mapSel=$("map");for(const k in MAPS)mapSel.add(new Option(MAPS[k].label,k));
 initMarbles();
+loadLibrary();
 </script>
 </body>
 </html>
