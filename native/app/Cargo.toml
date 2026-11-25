@@ -1,0 +1,8 @@
+[package]
+name = "marbeat"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+marbeat-core = { path = "../core" }
+eframe = { version = "0.29", default-features = false, features = ["glow", "default_fonts", "x11", "wayland"] }

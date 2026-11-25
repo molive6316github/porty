@@ -1,0 +1,7 @@
+[package]
+name = "marbeat-cli"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+marbeat-core = { path = "../core" }
