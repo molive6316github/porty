@@ -1,0 +1,20 @@
+{
+  "overall_passed": true,
+  "tolerances": {
+    "max_abs": 0.001,
+    "mean_abs": 0.0001
+  },
+  "components": [
+    {
+      "name": "waveform",
+      "max_abs_delta": 2.4437904357910156e-06,
+      "mean_abs_delta": 2.0770487196841714e-07,
+      "shape": [
+        1,
+        1,
+        25600
+      ],
+      "passed": true
+    }
+  ]
+}

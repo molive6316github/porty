@@ -1,0 +1,20 @@
+{
+  "overall_passed": true,
+  "tolerances": {
+    "max_abs": 0.001,
+    "mean_abs": 0.0001
+  },
+  "components": [
+    {
+      "name": "hidden_states",
+      "max_abs_delta": 0.00051116943359375,
+      "mean_abs_delta": 1.3095690519548953e-05,
+      "shape": [
+        1,
+        49,
+        1024
+      ],
+      "passed": true
+    }
+  ]
+}

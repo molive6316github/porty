@@ -139,7 +139,15 @@ textarea{width:100%;min-height:84px;background:#0e0e17;border:1px solid var(--li
       <div class="panel">
         <h3>3 · Lyrics &amp; singing</h3>
         <label>Voice engine</label>
-        <select id="engine"><option value="sing">Sing lyrics (synthesized voices)</option><option value="remix">Remix the song (pitch-shifted)</option></select>
+        <select id="engine"><option value="sing">Sing lyrics (synthesized voices)</option><option value="remix">Remix the song (pitch-shifted)</option><option value="cover">Cover: change the voice of a vocals-only file (best sync)</option></select>
+        <div id="coverBox" style="display:none;margin-top:8px">
+          <p class="note"><b>Cover mode</b> converts the real singing into each marble's voice, so the timing and melody are exactly the song's (no lyrics sync needed). Give each marble a voice sample with 🎤 below. Whoever leads sings.</p>
+          <label>Vocals-only file (acapella) of the same song <span style="color:#ff8aa8">required</span></label>
+          <input type="file" id="vocalsFile" accept="audio/*">
+          <label>Instrumental / backing track (optional)</label>
+          <input type="file" id="instFile" accept="audio/*">
+          <p class="note" id="coverNote">Loads about 200 MB the first time. Converting takes roughly as long as the clip, or several times longer on a Chromebook.</p>
+        </div>
         <label>Voice quality</label>
         <select id="voiceq"><option value="neural">Neural voices (natural, ~115 MB first load)</option><option value="robot">Robot voices (fast, tiny)</option></select>
         <label>Lyric sync</label>
@@ -259,8 +267,9 @@ function initMarbles(){
         setStatus("Reading your voice sample…");
         const pr=await prepClone(file);
         const name="v"+Math.random().toString(36).slice(2,8);
-        await cloneEncode(name,pr.audio);
-        m.clone={name,f0:pr.f0,fname:file.name.slice(0,22)};
+        const a24=pr.audio.slice();let encoded=false;
+        if($("engine").value!=="cover"){await cloneEncode(name,pr.audio);encoded=true} // Cover mode doesn't need the text-to-speech models
+        m.clone={name,f0:pr.f0,fname:file.name.slice(0,22),a16:pr.a16,a24,encoded};
         setStatus(`Voice cloned for ${m.name} (${pr.f0?Math.round(pr.f0)+" Hz":"pitch unknown"}). It sings whenever ${m.name} leads.`);
         initMarbles();
       })}catch(e){setStatus(e&&e.message==="cancelled"?"Cancelled.":"Cloning failed: "+(e&&e.message||e)+". Open Marbeat from its web address, not the file.");clIn.value=""}
@@ -861,7 +870,12 @@ async function voiceBuffer(m,s,len,vc,mi){
     const buf=actx.createBuffer(1,N,sr);buf.copyToChannel(normalize(seg,.9),0);voiceCache.set(key,buf);return buf;
   }
   let key,out,sr;
-  if(vc.engine==="sing"&&m.clone&&!vc.noClone){
+  if(vc.engine==="cover"){
+    const sig=hashStr(JSON.stringify(vc.segsOf[mi]));
+    key=`${songId}|cover|${coverVocals.id}|${m.clone?m.clone.name:m.preset}|${s}|${len}|${sig}`;
+    if(voiceCache.has(key))return voiceCache.get(key);
+    out=await coverTrack(m,mi,vc,len);sr=16000;
+  }else if(vc.engine==="sing"&&m.clone&&!vc.noClone){
     const sig=hashStr(vc.slots.map((_,i)=>vc.need[i].has(mi)?1:0).join(""));
     key=`${songId}|clone|${m.clone.name}|${s}|${len}|${vc.slotHash}|${vc.melody}|${sig}`;
     if(voiceCache.has(key))return voiceCache.get(key);
@@ -1066,13 +1080,20 @@ async function prepClone(file){
   let mono=new Float32Array(buf.length);for(let i=0;i<mono.length;i++)mono[i]=(c0[i]+c1[i])/2;
   mono=trimSil(mono,sr);
   if(mono.length<sr*2)throw new Error("that sample is too short; use at least 3 seconds of one person talking");
+  const mono30=mono.slice(0,Math.floor(sr*30));
+  const a16=await resampleMono(mono30,sr,16000);
   mono=mono.slice(0,Math.floor(sr*12));
   const b=actx.createBuffer(1,mono.length,sr);b.copyToChannel(mono,0);
   const oc=new OfflineAudioContext(1,Math.ceil(mono.length/sr*24000),24000),so=oc.createBufferSource();so.buffer=b;so.connect(oc.destination);so.start();
   const out=(await oc.startRendering()).getChannelData(0).slice();
   let pk=0;for(let i=0;i<out.length;i+=3)pk=Math.max(pk,Math.abs(out[i]));
   if(pk>0){const g=.9/pk;for(let i=0;i<out.length;i++)out[i]*=g}
-  return{audio:out,f0:estF0(out,24000)||150};
+  return{audio:out,f0:estF0(out,24000)||150,a16};
+}
+async function resampleMono(x,sr,rate){
+  const b=actx.createBuffer(1,x.length,sr);b.copyToChannel(x,0);
+  const oc=new OfflineAudioContext(1,Math.ceil(x.length/sr*rate),rate),so=oc.createBufferSource();so.buffer=b;so.connect(oc.destination);so.start();
+  return (await oc.startRendering()).getChannelData(0).slice();
 }
 async function prepareClone(pairs){
   const seen=new Set(),need=pairs.filter(p=>{const k=p.name+"|"+p.word;if(cloneRaw.has(k)||seen.has(k))return false;seen.add(k);return true});
@@ -1099,6 +1120,118 @@ async function cloneTrack(m,mi,vc,len){
     if(i%8===7)await sleep();
   }
   for(let i=0;i<out.length;i++)out[i]=Math.tanh(out[i]*1.1)/1.1;
+  return out;
+}
+
+// ================= COVER MODE: voice changer (kNN-VC, local) =================
+let coverVocals=null,coverBacking=null,vcW=null,vcReadyP=null,vcHandler=null,vcBusy=Promise.resolve();
+function getVC(){
+  if(vcReadyP)return vcReadyP;
+  vcReadyP=new Promise((resolve,reject)=>{
+    const w=new Worker(APP_BASE+"ai/vc/worker.js");vcW=w;
+    w.onerror=e=>{vcReadyP=null;reject(new Error("could not start the voice changer ("+(e.message||"load error")+")"))};
+    w.onmessage=ev=>{
+      const m=ev.data;
+      if(m.type==="status"){setStatus(m.text);return}
+      if(m.type==="loaded"){resolve(w);return}
+      if(vcHandler)vcHandler(m);else if(m.type==="error"){vcReadyP=null;reject(new Error(m.error))}
+    };
+    w.postMessage({type:"load"});
+  });
+  return vcReadyP;
+}
+function vcRun(fn){const p=vcBusy.then(fn);vcBusy=p.catch(()=>{});return p}
+async function vcCall(msg,doneType,transfer){
+  const w=await getVC();
+  return vcRun(()=>new Promise((res,rej)=>{
+    vcHandler=m=>{
+      if(m.type==="status")setStatus(m.text);
+      else if(m.type===doneType){vcHandler=null;res(m)}
+      else if(m.type==="error"){vcHandler=null;rej(new Error(m.error))}
+    };
+    w.postMessage(msg,transfer||[]);
+  }));
+}
+async function readAudioFile(file){
+  ensureCtx();
+  const buf=await actx.decodeAudioData(await file.arrayBuffer());
+  const c0=buf.getChannelData(0),c1=buf.numberOfChannels>1?buf.getChannelData(1):c0,mono=new Float32Array(buf.length);
+  for(let i=0;i<mono.length;i++)mono[i]=(c0[i]+c1[i])/2;
+  return{mono,sr:buf.sampleRate,dur:buf.duration};
+}
+$("vocalsFile").onchange=async()=>{
+  const f=$("vocalsFile").files[0];if(!f)return;
+  try{await withBusy(async()=>{
+    setStatus("Reading the vocals file…");const a=await readAudioFile(f);
+    coverVocals={f16:await resampleMono(a.mono,a.sr,16000),id:Math.random().toString(36).slice(2,8),dur:a.dur};
+    setStatus(`Vocals loaded (${a.dur.toFixed(1)}s).`+(songBuf&&Math.abs(a.dur-songBuf.duration)>2?` Warning: the song is ${songBuf.duration.toFixed(1)}s long. The vocals file should be the same song, same length, so they line up.`:" It lines up with the song if it's the same length."));
+  })}catch(e){setStatus("Couldn't read that file: "+(e&&e.message||e));$("vocalsFile").value=""}
+};
+$("instFile").onchange=async()=>{
+  const f=$("instFile").files[0];if(!f)return;
+  try{await withBusy(async()=>{setStatus("Reading the instrumental…");const a=await readAudioFile(f);coverBacking=a;setStatus(`Instrumental loaded (${a.dur.toFixed(1)}s).`)})}
+  catch(e){setStatus("Couldn't read that file: "+(e&&e.message||e));$("instFile").value=""}
+};
+// who leads at each frame -> contiguous runs per marble (tiny runs are merged into the previous one)
+function leadRuns(tl){
+  const who=f=>tl.kind==="race"?tl.leadA[f]:pathState(tl,f/FPS).voice;
+  const runs=[];let a=0,cur=who(0);
+  for(let f=1;f<=tl.F;f++){const v=who(f);if(v!==cur||f===tl.F){runs.push({m:cur,f0:a,f1:f});a=f;cur=v}}
+  const merged=[];
+  for(const r of runs){const p=merged[merged.length-1];if(p&&(r.f1-r.f0<24))p.f1=r.f1;else if(p&&p.m===r.m)p.f1=r.f1;else merged.push({...r})}
+  return merged;
+}
+async function prepareCover(tl,s,len,vc){
+  if(!coverVocals)throw new Error("Cover mode needs the vocals-only file. Upload it under \"Cover files\".");
+  vc.runs=leadRuns(tl);
+  vc.segsOf=marbles.map(()=>[]);
+  for(const r of vc.runs)vc.segsOf[r.m].push({ta:r.f0/FPS,tb:Math.min(len,r.f1/FPS)});
+  { // overall level: bring the vocals' typical (voiced) loudness to a healthy target
+    const v=coverVocals.f16,a=Math.floor(s*16000),b=Math.min(v.length,Math.floor((s+len)*16000));let pk=0;
+    for(let i=a;i<b;i+=3)pk=Math.max(pk,Math.abs(v[i]));
+    let e=0,c=0;for(let i=a;i<b;i++)if(Math.abs(v[i])>pk*.1){e+=v[i]*v[i];c++}
+    vc.gain=Math.max(.4,Math.min(10,.2/(Math.sqrt(e/Math.max(1,c))||.1)));
+  }
+  if(coverBacking){ // instrumental for this section
+    const sr=coverBacking.sr,a=Math.floor(s*sr),N=Math.floor(len*sr),seg=new Float32Array(N);
+    for(let i=0;i<N;i++)seg[i]=coverBacking.mono[a+i]||0;
+    normalize(seg,.9);const b=actx.createBuffer(1,N,sr);b.copyToChannel(seg,0);vc.backing=b;
+  }
+}
+const COVER_PAD=.25;
+async function coverTrack(m,mi,vc,len){
+  const SR=16000,out=new Float32Array(Math.floor(len*SR)),v16=coverVocals.f16;
+  const segs=vc.segsOf[mi];if(!segs.length)return out;
+  const hasRef=!!(m.clone&&m.clone.a16);
+  if(hasRef&&!m.clone.vcRef){await vcCall({type:"setref",name:m.clone.name,audio:m.clone.a16.slice()},"refset");m.clone.vcRef=true}
+  let k=0;
+  for(const sg of segs){
+    k++;
+    const s0=Math.max(0,Math.floor((vc.s+sg.ta-COVER_PAD)*SR)),s1=Math.min(v16.length,Math.floor((vc.s+sg.tb+COVER_PAD)*SR));
+    if(s1-s0<SR*.1)continue;
+    const src=v16.slice(s0,s1);let conv;
+    if(hasRef){
+      setStatus(`Voice changer: ${m.name}, part ${k}/${segs.length} (${((s1-s0)/SR).toFixed(1)}s of singing)…`);
+      conv=(await vcCall({type:"convert",id:k,name:m.clone.name,audio:src},"converted")).audio;
+    }else{conv=applyFx(src,VDEF[m.preset],SR)} // no voice sample for this marble: pitch-shifted original vocals
+    { // match the converted piece to the loudness of the singing it replaces, then apply the overall level
+      const rmsV=a=>{let pk=0;for(let i=0;i<a.length;i+=3)pk=Math.max(pk,Math.abs(a[i]));let e=0,c=0;for(let i=0;i<a.length;i++)if(Math.abs(a[i])>pk*.1){e+=a[i]*a[i];c++}return Math.sqrt(e/Math.max(1,c))||1e-4};
+      const g=Math.max(.05,Math.min(8,rmsV(src)/rmsV(conv)))*vc.gain;
+      for(let i=0;i<conv.length;i++)conv[i]*=g;
+      // follow the original's loudness shape: where the singer is silent, the converted voice must be silent too
+      const hop=320,nh=Math.ceil(src.length/hop),env=new Float32Array(nh);
+      for(let h=0;h<nh;h++){let e=0,c=0;for(let i=h*hop;i<Math.min(src.length,(h+1)*hop);i++){e+=src[i]*src[i];c++}env[h]=Math.sqrt(e/Math.max(1,c))}
+      const sm=env.map((_,h)=>(env[Math.max(0,h-1)]+env[h]*2+env[Math.min(nh-1,h+1)])/4),thr=.15*rmsV(src);
+      for(let i=0;i<conv.length;i++){const hp=Math.min(nh-1,i/hop),h0=Math.floor(hp),h1=Math.min(nh-1,h0+1),f=hp-h0,e=sm[h0]*(1-f)+sm[h1]*f;conv[i]*=Math.min(1,e/thr)}
+    }
+    const lead=Math.floor((vc.s+sg.ta)*SR)-s0,dst=Math.floor(sg.ta*SR),n=Math.min(Math.floor((sg.tb-sg.ta)*SR),conv.length-lead);
+    for(let j=0;j<n&&dst+j<out.length;j++){
+      let g=1;const fade=Math.floor(SR*.015);if(j<fade)g=j/fade;else if(n-j<fade)g=(n-j)/fade;
+      out[dst+j]+=conv[lead+j]*g;
+    }
+    await sleep();
+  }
+  for(let i=0;i<out.length;i++)out[i]=Math.tanh(out[i]*1.1)/1.1; // gentle limiter
   return out;
 }
 
@@ -1306,8 +1439,9 @@ async function startRunInner(){
     if($("mode").value==="race")tl=await buildRaceTL(len,beats,n,+$("winner").value);else tl=buildPath(len,beats,n);
   }catch(e){setStatus("Simulation failed: "+e.message);$("go").disabled=false;return}
   const engine=$("engine").value,text=$("lyrics").value.trim();
-  const vc={engine,text,melody:$("melody").checked,slots:null,offs:null,backing:null};
-  if(engine==="sing"){
+  const vc={engine,text,melody:$("melody").checked,slots:null,offs:null,backing:null,s};
+  if(engine==="cover"){await prepareCover(tl,s,len,vc)}
+  else if(engine==="sing"){
     await ensureAI();
     vc.slots=computeSlots(beats,len,text,$("syncmode").value,s,+$("syncoff").value,$("loop").checked);
     if(!vc.slots){setStatus($("syncmode").value==="tap"?"Tap to sync first (or pick another sync mode).":$("syncmode").value==="ai"?"Run AI sync first.":"Add some lyrics first.");$("go").disabled=false;return}
@@ -1323,6 +1457,7 @@ async function startRunInner(){
       if(!set.size)set.add(0);
       return set;
     });
+    for(const mm of marbles)if(mm.clone&&!mm.clone.encoded){setStatus("Preparing cloned voice for "+mm.name+"…");await cloneEncode(mm.clone.name,mm.clone.a24.slice());mm.clone.encoded=true}
     const cpairs=[];
     vc.slots.forEach((sl,i)=>vc.need[i].forEach(mi=>{const mm=marbles[mi];if(mm.clone)cpairs.push({name:mm.clone.name,word:sl.text})}));
     if(cpairs.length){
@@ -1344,7 +1479,7 @@ async function startRunInner(){
     vc.backing=backingBuf(s,len,$("novox").checked);
   }
   const bufs=[];
-  try{for(let i=0;i<n;i++){setStatus(`Synthesizing voices… ${i+1}/${n} (${VOICES[marbles[i].preset]})`);await sleep();bufs.push(await voiceBuffer(marbles[i],s,len,vc,i))}}
+  try{for(let i=0;i<n;i++){if(engine!=="cover")setStatus(`Synthesizing voices… ${i+1}/${n} (${VOICES[marbles[i].preset]})`);await sleep();bufs.push(await voiceBuffer(marbles[i],s,len,vc,i))}}
   catch(e){if(e&&e.message==="cancelled")throw e;setStatus("Voice synthesis failed: "+e.message);$("go").disabled=false;return}
   const master=actx.createGain(),dest=actx.createMediaStreamDestination();
   const comp=actx.createDynamicsCompressor();comp.threshold.value=-20;comp.knee.value=12;comp.ratio.value=4;comp.attack.value=.004;comp.release.value=.18;
@@ -1352,7 +1487,7 @@ async function startRunInner(){
   master.connect(comp);comp.connect(makeup);makeup.connect(actx.destination);makeup.connect(dest);
   const gains=[],srcs=[];
   bufs.forEach(b=>{const src=actx.createBufferSource();src.buffer=b;const gn=actx.createGain();gn.gain.value=0;src.connect(gn);gn.connect(master);gains.push(gn);srcs.push(src)});
-  if(vc.backing){duckBacking(vc.backing,bufs,.6);const bs=actx.createBufferSource();bs.buffer=vc.backing;const bg=actx.createGain();bg.gain.value=+$("backvol").value/100;bs.connect(bg);bg.connect(master);srcs.push(bs)}
+  if(vc.backing){if(engine!=="cover")duckBacking(vc.backing,bufs,.6);const bs=actx.createBufferSource();bs.buffer=vc.backing;const bg=actx.createGain();bg.gain.value=+$("backvol").value/100;bs.connect(bg);bg.connect(master);srcs.push(bs)}
   const t0=actx.currentTime+.3;let cur=-1;
   for(let f=0;f<=tl.F;f++){
     const t=f/FPS,v=tl.kind==="race"?tl.leadA[f]:pathState(tl,t).voice;
@@ -1398,6 +1533,7 @@ function stopRun(silent){
   run=null;$("go").disabled=!songBuf;$("stop").disabled=true;if(!silent)setStatus("Stopped.");idleDraw();
 }
 $("copyLog").onclick=async()=>{const t=LOG.join("\n");try{await navigator.clipboard.writeText(t);setStatus("Log copied.")}catch(e){const el=$("diagLog");el.textContent=t}};
+$("engine").addEventListener("change",()=>{$("coverBox").style.display=$("engine").value==="cover"?"block":"none"});
 $("go").onclick=startRun;$("stop").onclick=()=>{if(busyAt)prepAbort=true;stopAux(true);stopRun(false)};
 ["mode","winner","seed","len","start","engine","map"].forEach(id=>$(id).addEventListener("change",idleDraw));
 $("seed").addEventListener("input",idleDraw);

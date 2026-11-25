@@ -41,3 +41,15 @@ actually sings (while it leads) are synthesized. "Robot voices" (eSpeak) remains
 - `sentencepiece.js` (tokenizer), `ort.min.mjs` + `ort-wasm-simd-threaded.*` (onnxruntime-web 1.20, MIT).
 
 Only clone voices you have the right to use. Quality varies with the sample: use clear, dry speech, 5-15 s.
+
+## Cover mode: voice changer (kNN-VC, fully local)
+`marbeat/ai/vc/` converts a vocals-only recording into each marble's voice, so timing and melody come from the real singing.
+- `worker.js`: our implementation of [kNN-VC](https://github.com/bshall/knn-vc) (Baas et al., Interspeech 2023, MIT): WavLM-Large layer-6 features,
+  k=4 nearest-neighbour matching against the target voice's sample, HiFi-GAN vocoder (outputs 256 samples/frame, stretched x1.25 to restore timing).
+- `wavlm_mm8.part00/01`: WavLM-Large (Microsoft, MIT) layers 0-6, ONNX from [TigreGotico/voiceclonnx-knn-vc](https://huggingface.co/TigreGotico/voiceclonnx-knn-vc),
+  **re-quantized by us (MatMul-only int8)** because the original int8 file uses ConvInteger, which onnxruntime-web can't run. Split into two files for GitHub's 100 MB limit; the page rejoins them.
+  Feature parity with the fp32 original: cosine similarity 0.9986.
+- `hifigan_knnvc.onnx`: prematched HiFi-GAN vocoder (fp32).
+- onnxruntime-web files are shared with `ai/clone/`.
+
+Needs the acapella (vocals-only) of the same song, same length. Only convert voices you have the right to use.
