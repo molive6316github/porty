@@ -187,7 +187,12 @@ So cheer for your favourite one and watch them go go go</textarea>
 
 <footer>Marbeat · independent project · not affiliated with any other marble race tool</footer>
 
-<script src="mespeak.bundle.js"></script>
+<script>
+// Load the speech engine from this app's own folder, even if the page was opened as /marbeat (no trailing slash)
+(function(){var u=new URL(location.href);u.hash="";u.search="";var p=u.pathname;
+if(p.charAt(p.length-1)!=="/"){var last=p.split("/").pop();p=last.indexOf(".")>=0?p.slice(0,p.lastIndexOf("/")+1):p+"/"}
+u.pathname=p;document.write('<script src="'+u.href+'mespeak.bundle.js"><\/script>')})();
+</script>
 <script>
 "use strict";
 const $=id=>document.getElementById(id);
@@ -653,6 +658,7 @@ function wavToFloat(ab){
 }
 let speakCount=0;
 function speakWord(word,v,pitch,speed){
+  if(typeof meSpeak==="undefined")throw new Error("the Robot voice engine file (mespeak.bundle.js) didn't load. Check that it is in the same folder as index.html");
   // meSpeak's engine breaks every ~80 calls; restart it well before that
   if(++speakCount%30===0&&meSpeak.recycle)meSpeak.recycle();
   const opt={rawdata:true,pitch:Math.round(Math.max(0,Math.min(99,pitch))),speed:Math.round(speed),amplitude:100,wordgap:0};
