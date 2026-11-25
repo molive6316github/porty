@@ -90,12 +90,22 @@ textarea{width:100%;min-height:84px;background:#0e0e17;border:1px solid var(--li
     <div class="stagewrap">
       <canvas id="stage" width="720" height="1280"></canvas>
       <div class="row" style="width:100%;max-width:360px">
-        <button class="btn" id="go" disabled>▶ Race</button>
+        <button class="btn" id="go" disabled>▶ Preview</button>
         <button class="btn ghost" id="stop" disabled>■ Stop</button>
       </div>
-      <label style="display:flex;gap:8px;align-items:center;margin:0"><input type="checkbox" id="rec" checked> Record video while racing</label>
+      <div style="width:100%;max-width:360px;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px">
+        <div style="font-size:13px;font-weight:700;margin-bottom:6px">🎬 Render a finished video</div>
+        <div class="row">
+          <select id="rquality"><option value="draft">Draft · 540p · 30 fps (quick check)</option><option value="std" selected>HD · 1080×1920 · 30 fps</option><option value="hi">HD · 1080×1920 · 60 fps + motion blur (slowest)</option></select>
+          <button class="btn" id="render" style="flex:0 0 auto">Render</button>
+        </div>
+        <p class="note" style="margin:6px 0 0">Preview is the quick live version. Render draws every frame itself with glow, trails and a mastered mix, then makes an MP4 (or WebM). It takes a while, and looks and sounds the same on any computer.</p>
+        <div id="renderBox" style="display:none;margin-top:8px"><div style="height:8px;background:#0e0e17;border-radius:6px;overflow:hidden"><div id="rbar" style="height:100%;width:0;background:linear-gradient(90deg,var(--ac),var(--ac2))"></div></div><div id="rtxt" class="note" style="margin-top:4px"></div></div>
+      </div>
+      <label style="display:flex;gap:8px;align-items:center;margin:0"><input type="checkbox" id="rec"> Also record the preview (quick, lower quality)</label>
       <div id="status">Load a song to begin.</div>
       <a id="dl" class="btn" style="display:none">⬇ Download video</a>
+      <video id="rvid" controls playsinline style="display:none;width:100%;max-width:360px;border-radius:12px;background:#000"></video>
       <details style="width:100%;max-width:360px;font-size:12px;color:var(--mut)"><summary>Diagnostics (what is it doing?)</summary>
         <pre id="diagLog" style="white-space:pre-wrap;max-height:200px;overflow:auto;margin:6px 0;font-size:11px"></pre>
         <button class="btn ghost sm" id="copyLog">Copy log</button></details>
@@ -214,7 +224,7 @@ function appBaseFrom(href){
   u.pathname=p;return u.href;
 }
 const APP_BASE=appBaseFrom(location.href); // folder this page lives in, even when opened as /marbeat (no slash)
-const W=540,H=960,SC=720/540,FPS=60;
+const W=540,H=960,FPS=60;let SC=720/540;
 const COLORS=["#ff4d8d","#ffb02e","#3ddc97","#4da3ff","#b06cff","#ff6b4a","#22d3ee","#e5e84a"];
 const NAMES=["Poppy","Milo","Ziggy","Juno","Rex","Bea","Otto","Luna"];
 // Parody-style character archetypes (original, not clones of anyone). espeak = synth params, ratio/fx = post processing
@@ -234,13 +244,15 @@ const VKEYS=Object.keys(VOICES);
 let actx=null,songBuf=null,peaks=null,beatsAll=[],marbles=[],songId=0;
 let run=null,lastRun=null,idleCourse=null,idleKey="";
 const voiceCache=new Map();
+let RQ=false; // true while preparing a Render: slower, cleaner settings (kept in separate caches from the preview)
+const qk=()=>RQ?"R|":"";
 let prepAbort=false,busyAt=0,curStatus="",statusAt=Date.now();
 const T0=Date.now(),LOG=[];
 function logLine(m){LOG.push(((Date.now()-T0)/1000).toFixed(1).padStart(6)+"s  "+m);if(LOG.length>400)LOG.shift();const el=document.getElementById("diagLog");if(el){el.textContent=LOG.slice(-60).join("\n");el.scrollTop=el.scrollHeight}}
 const sleep=()=>new Promise((r,j)=>setTimeout(()=>prepAbort?j(new Error("cancelled")):r(),0)); // also lets Stop cancel any long step
 async function withBusy(fn){
-  const was=busyAt;if(!was){busyAt=Date.now();prepAbort=false;$("stop").disabled=false}
-  try{return await fn()}finally{if(!was)busyAt=0}
+  const was=busyAt;if(!was){busyAt=Date.now();prepAbort=false;$("stop").disabled=false;$("render").disabled=true}
+  try{return await fn()}finally{if(!was){busyAt=0;$("render").disabled=false}}
 }
 
 // ---------- setup UI ----------
@@ -557,9 +569,9 @@ function marbleDot(x,y,r,col,glow){
   g.fillStyle=rg;g.beginPath();g.arc(x,y,r,0,6.28);g.fill();
 }
 // scene: course, P=[{x,y}], camY, pulse, leader, order, tSim(for spinners), overlay winner idx or -1
-function drawRaceScene(course,P,camY,pulse,leader,order,tSim,winnerIdx){
+function drawRaceScene(course,P,camY,pulse,leader,order,tSim,winnerIdx,fx){
   const pal=course.pal,off=H*.42-camY,top=camY-H*.42-60,bot=camY+H*.58+60;
-  g.save();g.translate(0,off);
+  g.save();g.translate(fx&&fx.shake?fx.shake[0]:0,off+(fx&&fx.shake?fx.shake[1]:0));
   g.fillStyle="#ffffff18";for(let gy=Math.floor(top/70);gy<bot/70;gy++){for(let k=0;k<3;k++){const hx=((gy*7919+k*104729)%1000)/1000*W,hy=gy*70+((gy*31+k*17)%70);g.fillRect(hx,hy,2,2)}}
   // side walls + lane lines
   g.fillStyle="#1a1a2e";g.fillRect(-20,top,22,bot-top);g.fillRect(W-2,top,22,bot-top);
@@ -580,6 +592,9 @@ function drawRaceScene(course,P,camY,pulse,leader,order,tSim,winnerIdx){
     const a=sp.ph+sp.w*tSim,c=Math.cos(a)*sp.len,sn=Math.sin(a)*sp.len;
     g.strokeStyle=pal.sp;g.lineWidth=sp.r*2;g.lineCap="round";g.beginPath();g.moveTo(sp.cx-c,sp.cy-sn);g.lineTo(sp.cx+c,sp.cy+sn);g.stroke();
     g.fillStyle="#fff";g.beginPath();g.arc(sp.cx,sp.cy,5,0,6.28);g.fill();
+  }
+  if(fx&&fx.hist){ // comet trails behind every marble
+    for(const i of order){fx.hist.forEach((Hk,k)=>{const q=Hk[i];if(q.y<top-30||q.y>bot+30)return;g.globalAlpha=.34*(1-(k+1)/(fx.hist.length+1));g.fillStyle=marbles[i].color;g.beginPath();g.arc(q.x,q.y,RAD*(1-.06*(k+1)),0,6.28);g.fill()});g.globalAlpha=1}
   }
   [...order].reverse().forEach(i=>{const p=P[i];if(p.y<top-30||p.y>bot+30)return;marbleDot(p.x,p.y,RAD,marbles[i].color,i===leader)});
   // leader tag
@@ -634,19 +649,28 @@ function drawCaption(t){
   g.textAlign="center";g.font="bold 46px system-ui";g.lineWidth=8;g.strokeStyle="#000";g.lineJoin="round";
   const y=H*.5+40;g.strokeText(sl.text,W/2,y);g.fillStyle="#fff";g.fillText(sl.text,W/2,y);g.textAlign="left";
 }
-function frame(t){
+function frame(t,fx){
   const tl=run.tl;g.setTransform(SC,0,0,SC,0,0);bgFill(tl.course?tl.course.pal:null);
-  if(tl.kind==="path"){drawPath(tl,t);drawCaption(t);return}
-  const n=tl.n,sim=tl.sim,f=Math.min(tl.F,Math.floor(t*FPS)),sf=tl.sf(f);
-  const P=[];for(let i=0;i<n;i++)P.push({x:sim.pos[(sf*n+i)*2],y:sim.pos[(sf*n+i)*2+1]});
-  const ts=sf/FPS,sc=i=>(sim.fins[i]>=0&&sim.fins[i]<=ts)?1e9-sim.fins[i]:P[i].y;
+  if(tl.kind==="path"){drawPath(tl,t);drawCaption(t);if(fx&&fx.vignette)vignette();return}
+  const n=tl.n,sim=tl.sim,fa=Math.max(0,t*FPS),f=Math.min(tl.F,Math.floor(fa));
+  // positions are interpolated between the 60 Hz physics steps, so motion stays smooth at any frame rate
+  const sfF=Math.max(0,Math.min(sim.F-1,fa*tl.factor)),sf0=Math.floor(sfF),sf1=Math.min(sim.F-1,sf0+1),u=sfF-sf0;
+  const at=k=>{const a=[];for(let i=0;i<n;i++)a.push({x:sim.pos[(k*n+i)*2],y:sim.pos[(k*n+i)*2+1]});return a};
+  const A=at(sf0),B=at(sf1),P=A.map((a,i)=>({x:a.x+(B[i].x-a.x)*u,y:a.y+(B[i].y-a.y)*u}));
+  const cam=sim.cam[sf0]*(1-u)+sim.cam[sf1]*u;
+  const ts=sfF/FPS,sc=i=>(sim.fins[i]>=0&&sim.fins[i]<=ts)?1e9-sim.fins[i]:P[i].y;
   const order=[...Array(n).keys()].sort((a,b)=>sc(b)-sc(a));
   const leader=tl.leadA[f];
-  // rank: finished marbles by y is fine because they fall past the line in order
   let pulse=0;for(const b of run.beatsRel){if(b<=t)pulse=Math.exp(-(t-b)*9);else break}
-  drawRaceScene(tl.course,P,sim.cam[sf],pulse,leader,order,sf/FPS,-1);
+  const efx=fx?{hist:fx.trail?[1,2,3,4,5,6,7,8].map(k=>at(Math.max(0,sf0-k*2))):null,shake:fx.shake?[Math.sin(t*93)*pulse*3,Math.cos(t*77)*pulse*3]:null}:null;
+  drawRaceScene(tl.course,P,cam,pulse,leader,order,ts,-1,efx);
   drawHUD(P,order,leader,tl.course,t>=tl.winTime?sim.winner:-1);
   drawCaption(t);
+  if(fx&&fx.vignette)vignette();
+}
+function vignette(){
+  const gr=g.createRadialGradient(W/2,H/2,H*.28,W/2,H/2,H*.72);gr.addColorStop(0,"rgba(0,0,0,0)");gr.addColorStop(1,"rgba(0,0,0,.5)");
+  g.fillStyle=gr;g.fillRect(0,0,W,H);
 }
 
 // ================= FAKE VOICES (granular pitch shift + character FX) =================
@@ -873,21 +897,21 @@ async function voiceBuffer(m,s,len,vc,mi){
   let key,out,sr;
   if(vc.engine==="cover"){
     const sig=hashStr(JSON.stringify(vc.segsOf[mi]));
-    key=`${songId}|cover|${vc.vocals.id}|${m.clone?m.clone.name:m.preset}|${s}|${len}|${sig}`;
+    key=`${qk()}${songId}|cover|${vc.vocals.id}|${m.clone?m.clone.name:m.preset}|${s}|${len}|${sig}`;
     if(voiceCache.has(key))return voiceCache.get(key);
     out=await coverTrack(m,mi,vc,len);sr=16000;
   }else if(vc.engine==="sing"&&m.clone&&!vc.noClone){
     const sig=hashStr(vc.slots.map((_,i)=>vc.need[i].has(mi)?1:0).join(""));
-    key=`${songId}|clone|${m.clone.name}|${s}|${len}|${vc.slotHash}|${vc.melody}|${sig}`;
+    key=`${qk()}${songId}|clone|${m.clone.name}|${s}|${len}|${vc.slotHash}|${vc.melody}|${sig}`;
     if(voiceCache.has(key))return voiceCache.get(key);
     out=await cloneTrack(m,mi,vc,len);sr=22050;
   }else if(vc.engine==="sing"&&vc.neural){
     const sig=hashStr(vc.slots.map((_,i)=>vc.need[i].has(mi)?1:0).join(""));
-    key=`${songId}|neural|${m.preset}|${s}|${len}|${vc.slotHash}|${vc.melody}|${sig}`;
+    key=`${qk()}${songId}|neural|${m.preset}|${s}|${len}|${vc.slotHash}|${vc.melody}|${sig}`;
     if(voiceCache.has(key))return voiceCache.get(key);
     out=await neuralTrack(m,mi,vc,len);sr=22050;
   }else if(vc.engine==="sing"){
-    key=`${songId}|sing|${m.preset}|${s}|${len}|${vc.slotHash}|${vc.melody}|${hashStr(vc.slots.map((_,i)=>vc.need[i].has(mi)?1:0).join(""))}`;
+    key=`${qk()}${songId}|sing|${m.preset}|${s}|${len}|${vc.slotHash}|${vc.melody}|${hashStr(vc.slots.map((_,i)=>vc.need[i].has(mi)?1:0).join(""))}`;
     if(voiceCache.has(key))return voiceCache.get(key);
     out=await synthTrack(m.preset,vc.slots,vc.offs,len,i=>vc.need[i].has(mi));sr=22050;
   }else{
@@ -972,7 +996,19 @@ function singWord(raw,v,semis,D,sr){
   const f0w=estF0(raw,sr)||v.f0n,ft=v.f0n*v.nr*Math.pow(2,semis*v.mel/12);
   const r=Math.max(.7,Math.min(1.5,ft/f0w));
   let sf=(D*r*sr)/raw.length;sf=Math.max(.42,Math.min(4.5,sf));
-  const st=Math.abs(sf-1)<.04?raw.slice():wsola(raw,sf);
+  let st;
+  if(Math.abs(sf-1)<.04)st=raw.slice();
+  else if(sf>1.12&&!window.__noAttackProtect){
+    // protect the consonant attack ("b", "t", "k"…): keep it as spoken, stretch only the vowel that follows
+    let pk=0;for(let i=0;i<raw.length;i+=2)pk=Math.max(pk,Math.abs(raw[i]));
+    const w5=Math.floor(sr*.005),lim=Math.min(raw.length,Math.floor(sr*.12));let ae=0;
+    for(let i=0;i<lim;i+=w5){let m=0;for(let j=0;j<w5&&i+j<raw.length;j++)m=Math.max(m,Math.abs(raw[i+j]));if(m>pk*.35){ae=i;break}}
+    ae=Math.min(ae+Math.floor(sr*.03),Math.floor(raw.length*.35));
+    if(ae>sr*.02&&raw.length-ae>2048){
+      const sf2=Math.max(.6,Math.min(5,(raw.length*sf-ae)/(raw.length-ae))),tail=wsola(raw.subarray(ae),sf2);
+      st=new Float32Array(ae+tail.length);st.set(raw.subarray(0,ae));st.set(tail,ae);
+    }else st=wsola(raw,sf);
+  }else st=wsola(raw,sf);
   const n=Math.floor(st.length/r);
   let out=resampleVib(st,r,n,D>.45?.02:0,sr);
   out=fxOnly(out,v,sr);
@@ -985,7 +1021,7 @@ function singWord(raw,v,semis,D,sr){
 }
 // get natural speech for every (word, speaker) the race needs, in one phonemizer pass
 async function prepareRaw(pi,pairs){
-  const need=pairs.filter(p=>!rawCache.has(p.sid+"|"+p.word));
+  const need=pairs.filter(p=>!rawCache.has(qk()+p.sid+"|"+p.word));
   if(!need.length)return;
   const words=[...new Set(need.map(p=>p.word))];
   const clean=words.map(cleanWord);
@@ -998,9 +1034,9 @@ async function prepareRaw(pi,pairs){
   for(const p of need){
     n++;if(n%4===0){setStatus(`Synthesizing neural voices… ${n}/${need.length}`);await sleep()}
     const id=idOf.get(p.word);let x;
-    if(id&&id.length>2){x=trimSil(await pi.synth(id,p.sid,.85),pi.sampleRate);rawIds.set(p.word,id)}
+    if(id&&id.length>2){x=trimSil(await pi.synth(id,p.sid,.85,RQ?.2:undefined,RQ?.45:undefined),pi.sampleRate);rawIds.set(p.word,id)}
     else{const w=speakWord(p.word,VDEF.pirate,45,150);x=w.x.slice()}
-    rawCache.set(p.sid+"|"+p.word,{x,sr:pi.sampleRate});
+    rawCache.set(qk()+p.sid+"|"+p.word,{x,sr:pi.sampleRate});
   }
 }
 async function neuralTrack(m,mi,vc,len){
@@ -1008,7 +1044,7 @@ async function neuralTrack(m,mi,vc,len){
   const pi=await getPiper();
   for(let i=0;i<vc.slots.length;i++){
     if(!vc.need[i].has(mi))continue;
-    const sl=vc.slots[i],raw=rawCache.get(v.sid+"|"+sl.text);if(!raw||!raw.x.length)continue;
+    const sl=vc.slots[i],raw=rawCache.get(qk()+v.sid+"|"+sl.text);if(!raw||!raw.x.length)continue;
     const D=Math.min(1.3,sl.t1-sl.t0),semis=Math.max(-5,Math.min(5,(vc.offs[i]||0)/2.2));
     // ask the neural voice itself to speak the word slower/faster so it fits (sounds far better than stretching audio)
     let x=raw.x;const ids=rawIds.get(sl.text);
@@ -1016,8 +1052,8 @@ async function neuralTrack(m,mi,vc,len){
       const f0w=estF0(raw.x,raw.sr)||v.f0n,r=Math.max(.7,Math.min(1.5,v.f0n*v.nr*Math.pow(2,semis*v.mel/12)/f0w));
       const ls=Math.max(.55,Math.min(2.6,.85*(D*r)/(raw.x.length/raw.sr)));
       if(Math.abs(ls/.85-1)>.12){
-        const k=`${v.sid}|${sl.text}|${ls.toFixed(2)}`;
-        if(!lsCache.has(k))lsCache.set(k,trimSil(await pi.synth(ids,v.sid,ls),pi.sampleRate));
+        const k=`${qk()}${v.sid}|${sl.text}|${ls.toFixed(2)}`;
+        if(!lsCache.has(k))lsCache.set(k,trimSil(await pi.synth(ids,v.sid,ls,RQ?.2:undefined,RQ?.45:undefined),pi.sampleRate));
         x=lsCache.get(k);
       }
     }
@@ -1096,21 +1132,29 @@ async function resampleMono(x,sr,rate){
   const oc=new OfflineAudioContext(1,Math.ceil(x.length/sr*rate),rate),so=oc.createBufferSource();so.buffer=b;so.connect(oc.destination);so.start();
   return (await oc.startRendering()).getChannelData(0).slice();
 }
+async function cloneSetQuality(){
+  const w=await getCloneWorker();
+  return cloneRun(()=>new Promise((res,rej)=>{
+    cloneHandler=m=>{if(m.type==="quality_set"){cloneHandler=null;res()}else if(m.type==="error"){cloneHandler=null;rej(new Error(m.error))}};
+    w.postMessage({type:"set_quality",data:{lsd:RQ?4:1,temperature:RQ?.6:.7}});
+  }));
+}
 async function prepareClone(pairs){
-  const seen=new Set(),need=pairs.filter(p=>{const k=p.name+"|"+p.word;if(cloneRaw.has(k)||seen.has(k))return false;seen.add(k);return true});
+  await cloneSetQuality();
+  const seen=new Set(),need=pairs.filter(p=>{const k=qk()+p.name+"|"+p.word;if(cloneRaw.has(k)||seen.has(k))return false;seen.add(k);return true});
   let n=0;
   for(const p of need){
     n++;setStatus(`Cloned voices speaking… ${n}/${need.length}`);await sleep();
     const txt=cleanWord(p.word);
     const x=txt?trimSil(await cloneSay(p.name,txt),24000):new Float32Array(0);
-    cloneRaw.set(p.name+"|"+p.word,{x,sr:24000});
+    cloneRaw.set(qk()+p.name+"|"+p.word,{x,sr:24000});
   }
 }
 async function cloneTrack(m,mi,vc,len){
   const v={f0n:m.clone.f0||150,nr:1,mel:.6,fx:"none"},SR=22050,out=new Float32Array(Math.floor(len*SR)),ratio=24000/SR;
   for(let i=0;i<vc.slots.length;i++){
     if(!vc.need[i].has(mi))continue;
-    const sl=vc.slots[i],raw=cloneRaw.get(m.clone.name+"|"+sl.text);if(!raw||raw.x.length<200)continue;
+    const sl=vc.slots[i],raw=cloneRaw.get(qk()+m.clone.name+"|"+sl.text);if(!raw||raw.x.length<200)continue;
     const D=Math.min(1.3,sl.t1-sl.t0),semis=Math.max(-5,Math.min(5,(vc.offs[i]||0)/2.2));
     const w24=singWord(raw.x,v,semis,D,24000),n=Math.floor(w24.length/ratio),w=new Float32Array(n);
     for(let j=0;j<n;j++){const p=j*ratio,i0=Math.floor(p),fr=p-i0;w[j]=w24[i0]*(1-fr)+(w24[i0+1]||0)*fr}
@@ -1396,6 +1440,161 @@ async function ensureAI(){
 }
 $("aiSync").onclick=async()=>{$("go").disabled=true;try{await runAI()}finally{$("go").disabled=!songBuf}};
 
+// ================= AUDIO GRAPH (shared by the live preview and the offline render) =================
+function makeIR(ctx,sec){
+  const sr=ctx.sampleRate,n=Math.floor(sr*sec),ir=ctx.createBuffer(2,n,sr);
+  for(let c=0;c<2;c++){const d=ir.getChannelData(c);let lp=0;for(let i=0;i<n;i++){lp+=.35*((Math.random()*2-1)-lp);d[i]=lp*Math.pow(1-i/n,2.6)*(i<sr*.004?i/(sr*.004):1)}}
+  return ir;
+}
+// voices -> voice bus (EQ, presence, gentle compression, a little room) -> master (glue compressor, makeup) -> outputs.
+// The backing track goes straight to the master. Voice gains switch to the leading marble at every overtake.
+function wireAudio(ctx,outs,bufs,vc,tl,t0,engine,wet){
+  const master=ctx.createGain(),comp=ctx.createDynamicsCompressor(),makeup=ctx.createGain();
+  comp.threshold.value=-20;comp.knee.value=12;comp.ratio.value=4;comp.attack.value=.004;comp.release.value=.18;makeup.gain.value=1.8;
+  master.connect(comp);comp.connect(makeup);for(const o of outs)makeup.connect(o);
+  const vbus=ctx.createGain(),hp=ctx.createBiquadFilter(),pres=ctx.createBiquadFilter(),air=ctx.createBiquadFilter(),vcomp=ctx.createDynamicsCompressor();
+  hp.type="highpass";hp.frequency.value=80;pres.type="peaking";pres.frequency.value=3200;pres.Q.value=.8;pres.gain.value=2.5;
+  air.type="highshelf";air.frequency.value=9000;air.gain.value=1.5;
+  vcomp.threshold.value=-24;vcomp.knee.value=18;vcomp.ratio.value=2.5;vcomp.attack.value=.01;vcomp.release.value=.12;
+  vbus.connect(hp);hp.connect(pres);pres.connect(air);air.connect(vcomp);vcomp.connect(master);
+  if(wet>0){const conv=ctx.createConvolver(),wg=ctx.createGain();conv.buffer=makeIR(ctx,1.3);wg.gain.value=wet;air.connect(conv);conv.connect(wg);wg.connect(master)}
+  const gains=[],srcs=[];
+  bufs.forEach(b=>{const src=ctx.createBufferSource();src.buffer=b;const gn=ctx.createGain();gn.gain.value=0;src.connect(gn);gn.connect(vbus);gains.push(gn);srcs.push(src)});
+  if(vc.backing){
+    if(engine!=="cover"&&!vc.ducked){duckBacking(vc.backing,bufs,.6);vc.ducked=true}
+    const bs=ctx.createBufferSource();bs.buffer=vc.backing;const bg=ctx.createGain();bg.gain.value=vc.backGain!==undefined?vc.backGain:+$("backvol").value/100;bs.connect(bg);bg.connect(master);srcs.push(bs);
+  }
+  let cur=-1;
+  for(let f=0;f<=tl.F;f++){
+    const t=f/FPS,v=tl.kind==="race"?tl.leadA[f]:pathState(tl,t).voice;
+    if(v!==cur){gains.forEach((gn,i)=>gn.gain.setTargetAtTime(i===v?1:0,t0+t,.012));cur=v}
+  }
+  srcs.forEach(src=>src.start(t0,0));
+  return srcs;
+}
+
+// ================= RENDER: a finished HD video, drawn frame by frame (not recorded live) =================
+// final loudness: bring the mix to about -14 dBFS RMS, soft-limit the peaks, fade the ends
+function masterAudio(buf){
+  const L=buf.getChannelData(0).slice(),R=(buf.numberOfChannels>1?buf.getChannelData(1):buf.getChannelData(0)).slice(),n=L.length;
+  let e=0,c=0;const blk=2400;
+  for(let i=0;i+blk<=n;i+=blk){let b=0;for(let j=0;j<blk;j++)b+=L[i+j]*L[i+j]+R[i+j]*R[i+j];b/=2*blk;if(b>1e-5){e+=b;c++}}
+  const rms=Math.sqrt(e/Math.max(1,c))||.05,gain=Math.max(.4,Math.min(5,.2/rms));
+  const lim=x=>{const a=Math.abs(x);return a<.6?x:Math.sign(x)*(.6+.38*Math.tanh((a-.6)/.38))};
+  const fi=Math.floor(buf.sampleRate*.005),fo=Math.floor(buf.sampleRate*.25);
+  for(let i=0;i<n;i++){const f=(i<fi?i/fi:1)*(n-i<fo?(n-i)/fo:1);L[i]=lim(L[i]*gain)*f;R[i]=lim(R[i]*gain)*f}
+  return{L,R,gain,rms};
+}
+const RENDER_PRESETS={
+  draft:{w:540,h:960,fps:30,sub:1,bitrate:3e6,fx:{trail:true,vignette:true,shake:false}},
+  std:{w:1080,h:1920,fps:30,sub:1,bitrate:9e6,fx:{trail:true,vignette:true,shake:true}},
+  hi:{w:1080,h:1920,fps:60,sub:3,bitrate:14e6,fx:{trail:true,vignette:true,shake:true}}
+};
+function restoreCanvas(){cv.width=720;cv.height=1280;SC=720/540}
+async function renderHD(){
+  if(!songBuf){setStatus("Load a song first.");return}
+  if(busyAt){setStatus("Wait for the current step to finish, or press Stop.");return}
+  if(!window.VideoEncoder||!window.AudioEncoder||!window.VideoFrame){setStatus("This browser can't encode video. Use Chrome or Edge.");return}
+  const savedRun=run;
+  return withBusy(async()=>{
+    const tStart=Date.now();
+    try{
+      RQ=true;$("rvid").style.display="none";$("dl").style.display="none";
+      setStatus("Render: preparing the voices at high quality…");
+      const prep=await startRunInner(true);
+      if(!prep)return;
+      await renderVideoFile(prep,$("rquality").value,tStart);
+    }catch(e){
+      const m=e&&e.message||String(e);logLine((m==="cancelled"?"RENDER CANCELLED":"RENDER FAILED: "+m)+(e&&e.stack?"\n"+e.stack.split("\n").slice(0,3).join("\n"):""));
+      setStatus(m==="cancelled"?"Render cancelled.":"Render failed: "+m+". See Diagnostics below.");
+    }finally{
+      RQ=false;run=savedRun;restoreCanvas();$("renderBox").style.display="none";$("go").disabled=!songBuf;$("stop").disabled=true;idleDraw();
+    }
+  });
+}
+async function renderVideoFile(prep,quality,tStart){
+  const {tl,bufs,vc,len,beats,engine}=prep,P=RENDER_PRESETS[quality]||RENDER_PRESETS.std,SRATE=48000;
+  const fmt=t=>{t=Math.max(0,Math.round(t));return Math.floor(t/60)+":"+String(t%60).padStart(2,"0")};
+  // ---- 1. audio: render the whole mix offline, master it ----
+  setStatus("Render: mixing and mastering the audio…");await sleep();
+  const oac=new OfflineAudioContext(2,Math.ceil(len*SRATE),SRATE);
+  wireAudio(oac,[oac.destination],bufs,vc,tl,0,engine,.14);
+  const mix=masterAudio(await oac.startRendering());
+  logLine(`Audio mastered: gain x${mix.gain.toFixed(2)} (RMS was ${mix.rms.toFixed(3)})`);
+  // ---- 2. pick the best codecs this browser can encode ----
+  const base={width:P.w,height:P.h,bitrate:P.bitrate,framerate:P.fps};
+  let vsel=null;
+  for(const c of [{k:"avc",codec:"avc1.640034"},{k:"vp9",codec:"vp09.00.50.08"}]){
+    const cfg={codec:c.codec,...base,latencyMode:"quality",...(c.k==="avc"?{avc:{format:"avc"}}:{})};
+    try{if((await VideoEncoder.isConfigSupported(cfg)).supported){vsel={...c,cfg};break}}catch(e){}
+  }
+  if(!vsel)throw new Error("this browser can't encode "+P.w+"×"+P.h+" video");
+  const acfgs={aac:{codec:"mp4a.40.2",sampleRate:SRATE,numberOfChannels:2,bitrate:192000},opus:{codec:"opus",sampleRate:SRATE,numberOfChannels:2,bitrate:160000}};
+  let akind=null;
+  for(const k of vsel.k==="avc"?["aac","opus"]:["opus"]){try{if((await AudioEncoder.isConfigSupported(acfgs[k])).supported){akind=k;break}}catch(e){}}
+  if(!akind)throw new Error("this browser can't encode audio");
+  const container=vsel.k==="avc"?"mp4":"webm";
+  const M=await import(APP_BASE+"ai/render/muxers.js");
+  const target=container==="mp4"?new M.Mp4Target():new M.WebmTarget();
+  const muxer=container==="mp4"
+    ?new M.Mp4Muxer({target,video:{codec:"avc",width:P.w,height:P.h,frameRate:P.fps},audio:{codec:akind,numberOfChannels:2,sampleRate:SRATE},fastStart:"in-memory",firstTimestampBehavior:"offset"})
+    :new M.WebmMuxer({target,video:{codec:"V_VP9",width:P.w,height:P.h,frameRate:P.fps},audio:{codec:"A_OPUS",numberOfChannels:2,sampleRate:SRATE},firstTimestampBehavior:"offset"});
+  let encErr=null;
+  // ---- 3. encode the audio ----
+  setStatus("Render: encoding the audio…");await sleep();
+  const achunks=[],aenc=new AudioEncoder({output:(chunk,meta)=>achunks.push({chunk,meta}),error:e=>{encErr=e}});
+  aenc.configure(acfgs[akind]);
+  for(let o=0;o<mix.L.length;o+=SRATE){
+    const m=Math.min(SRATE,mix.L.length-o),data=new Float32Array(m*2);data.set(mix.L.subarray(o,o+m),0);data.set(mix.R.subarray(o,o+m),m);
+    const ad=new AudioData({format:"f32-planar",sampleRate:SRATE,numberOfFrames:m,numberOfChannels:2,timestamp:Math.round(o/SRATE*1e6),data});aenc.encode(ad);ad.close();
+  }
+  await aenc.flush();aenc.close();if(encErr)throw encErr;
+  let ai=0;const flushAudio=upTo=>{while(ai<achunks.length&&achunks[ai].chunk.timestamp/1e6<=upTo){muxer.addAudioChunk(achunks[ai].chunk,achunks[ai].meta);ai++}};
+  // ---- 4. draw and encode every frame ----
+  const venc=new VideoEncoder({output:(chunk,meta)=>{muxer.addVideoChunk(chunk,meta);flushAudio(chunk.timestamp/1e6+.5)},error:e=>{encErr=e}});
+  venc.configure(vsel.cfg);
+  cv.width=P.w;cv.height=P.h;SC=P.w/W;
+  run={tl,beatsRel:beats,slots:vc.slots,need:vc.need,rec:null,srcs:[]};
+  const acc=document.createElement("canvas");acc.width=P.w;acc.height=P.h;const ac=acc.getContext("2d");
+  const sm=document.createElement("canvas");sm.width=Math.floor(P.w/4);sm.height=Math.floor(P.h/4);const smc=sm.getContext("2d");
+  const total=Math.round(len*P.fps),tFrames=Date.now();
+  $("renderBox").style.display="block";
+  for(let i=0;i<total;i++){
+    if(prepAbort)throw new Error("cancelled");
+    if(encErr)throw encErr;
+    const t=i/P.fps;
+    for(let k=0;k<P.sub;k++){ // sub-frames averaged together = motion blur
+      const tk=Math.max(0,Math.min(len,t+(P.sub>1?(k/(P.sub-1)-.5)*.8/P.fps:0)));
+      frame(tk,P.fx);
+      ac.globalAlpha=k===0?1:1/(k+1);ac.drawImage(cv,0,0);
+    }
+    ac.globalAlpha=1;
+    smc.clearRect(0,0,sm.width,sm.height);smc.filter="blur(4px)";smc.drawImage(acc,0,0,sm.width,sm.height);smc.filter="none"; // glow
+    ac.globalCompositeOperation="lighter";ac.globalAlpha=.36;ac.drawImage(sm,0,0,P.w,P.h);ac.globalCompositeOperation="source-over";ac.globalAlpha=1;
+    const vf=new VideoFrame(acc,{timestamp:Math.round(i*1e6/P.fps),duration:Math.round(1e6/P.fps)});
+    venc.encode(vf,{keyFrame:i%(P.fps*2)===0});vf.close();
+    while(venc.encodeQueueSize>6)await new Promise(r=>setTimeout(r,4));
+    if(i%4===3||i===total-1){
+      const el=(Date.now()-tFrames)/1000,left=el/(i+1)*(total-i-1);
+      $("rbar").style.width=((i+1)/total*100).toFixed(1)+"%";
+      $("rtxt").textContent=`Frame ${i+1} / ${total} · ${fmt(el)} elapsed · about ${fmt(left)} left`;
+      setStatus(`Render: drawing frames… ${Math.round((i+1)/total*100)}%`);
+      await sleep();
+    }
+  }
+  setStatus("Render: finishing the file…");
+  await venc.flush();venc.close();if(encErr)throw encErr;
+  flushAudio(1e9);muxer.finalize();
+  const blob=new Blob([target.buffer],{type:container==="mp4"?"video/mp4":"video/webm"});
+  const url=URL.createObjectURL(blob),dl=$("dl"),vid=$("rvid");
+  dl.href=url;dl.download="marbeat-hd."+container;dl.textContent="⬇ Download HD video ("+(blob.size/1e6).toFixed(1)+" MB)";dl.style.display="inline-block";
+  vid.src=url;vid.style.display="block";
+  const desc=`${P.w}×${P.h} @ ${P.fps} fps, ${container.toUpperCase()} (${vsel.k==="avc"?"H.264":"VP9"} + ${akind==="aac"?"AAC":"Opus"})`;
+  logLine("RENDER DONE "+desc+" "+(blob.size/1e6).toFixed(1)+" MB in "+fmt((Date.now()-tStart)/1000));
+  setStatus(`Render done: ${desc}, ${(blob.size/1e6).toFixed(1)} MB, took ${fmt((Date.now()-tStart)/1000)}.`+(container==="webm"?" (WebM: this browser can't make MP4 with AAC.)":""));
+}
+$("render").onclick=renderHD;
+
 // ================= SYNC TOOLS: tap to sync + preview =================
 let aux=null; // {kind:'tap'|'prev', src, t0, len, raf, ...}
 function stopAux(silent){
@@ -1478,7 +1677,7 @@ async function startRun(){
     }finally{if(!run){$("go").disabled=!songBuf;$("stop").disabled=true}}
   });
 }
-async function startRunInner(){
+async function startRunInner(prepOnly){
   if(!songBuf)return;ensureCtx();stopRun(true);stopAux(true);$("dl").style.display="none";$("go").disabled=true;
   const len=Math.min(+$("len").value,songBuf.duration),s=+$("start").value,n=marbles.length;
   const beats=beatsAll.filter(t=>t>=s&&t<s+len).map(t=>t-s);
@@ -1529,19 +1728,10 @@ async function startRunInner(){
   const bufs=[];
   try{for(let i=0;i<n;i++){if(engine!=="cover")setStatus(`Synthesizing voices… ${i+1}/${n} (${VOICES[marbles[i].preset]})`);await sleep();bufs.push(await voiceBuffer(marbles[i],s,len,vc,i))}}
   catch(e){if(e&&e.message==="cancelled")throw e;setStatus("Voice synthesis failed: "+e.message);$("go").disabled=false;return}
-  const master=actx.createGain(),dest=actx.createMediaStreamDestination();
-  const comp=actx.createDynamicsCompressor();comp.threshold.value=-20;comp.knee.value=12;comp.ratio.value=4;comp.attack.value=.004;comp.release.value=.18;
-  const makeup=actx.createGain();makeup.gain.value=1.8; // overall loudness
-  master.connect(comp);comp.connect(makeup);makeup.connect(actx.destination);makeup.connect(dest);
-  const gains=[],srcs=[];
-  bufs.forEach(b=>{const src=actx.createBufferSource();src.buffer=b;const gn=actx.createGain();gn.gain.value=0;src.connect(gn);gn.connect(master);gains.push(gn);srcs.push(src)});
-  if(vc.backing){if(engine!=="cover")duckBacking(vc.backing,bufs,.6);const bs=actx.createBufferSource();bs.buffer=vc.backing;const bg=actx.createGain();bg.gain.value=+$("backvol").value/100;bs.connect(bg);bg.connect(master);srcs.push(bs)}
-  const t0=actx.currentTime+.3;let cur=-1;
-  for(let f=0;f<=tl.F;f++){
-    const t=f/FPS,v=tl.kind==="race"?tl.leadA[f]:pathState(tl,t).voice;
-    if(v!==cur){gains.forEach((gn,i)=>gn.gain.setTargetAtTime(i===v?1:0,t0+t,.012));cur=v}
-  }
-  srcs.forEach(src=>src.start(t0,0));
+  if(prepOnly)return{tl,bufs,vc,s,len,beats,engine,n};
+  const dest=actx.createMediaStreamDestination();
+  const t0=actx.currentTime+.3;
+  const srcs=wireAudio(actx,[actx.destination,dest],bufs,vc,tl,t0,engine,.1);
   run={tl,t0,len,srcs,raf:0,rec:null,chunks:[],beatsRel:beats,slots:vc.slots,need:vc.need,back:vc.backing};
   if($("rec").checked&&window.MediaRecorder){
     const vs=cv.captureStream(30);

@@ -19,7 +19,8 @@ const MODEL_STEMS = {
 const DEBUG_LOGS = false;
 const CHUNK_GAP_SEC = 0.25;
 const MAX_FRAMES = 500;
-const LSD_STEPS = 1;
+let LSD_STEPS = 1;
+let TEMPERATURE = 0.7;
 const RESET_FLOW_STATE_EACH_CHUNK = true;
 const RESET_MIMI_STATE_EACH_CHUNK = true;
 
@@ -680,6 +681,14 @@ self.onmessage = async (e) => {
             return;
         }
 
+        if (type === "set_quality") { // render quality: more flow steps = cleaner, slower
+            LSD_STEPS = Math.max(1, Math.min(8, data.lsd | 0 || 1));
+            TEMPERATURE = data.temperature || 0.7;
+            precomputeFlowBuffers();
+            postMessage({ type: "quality_set" });
+            return;
+        }
+
         if (type === "stop") {
             isGenerating = false;
             postMessage({ type: "status", status: "Stopped", state: "idle" });
@@ -852,7 +861,7 @@ async function runGenerationPipeline(voiceName, chunks, framesAfterEos) {
             }
             const shouldStop = eosStep != null && step >= eosStep + framesAfterEos;
 
-            const temperature = 0.7;
+            const temperature = TEMPERATURE;
             const std = Math.sqrt(temperature);
             const latentData = new Float32Array(currentLatentDim);
             for (let i = 0; i < currentLatentDim; i++) {

@@ -59,3 +59,12 @@ Cover mode can make the acapella itself. `marbeat/ai/sep/` runs [Spleeter](https
 using the ONNX export from [csukuangfj/sherpa-onnx-spleeter-2stems](https://huggingface.co/csukuangfj/sherpa-onnx-spleeter-2stems) (fp32, `vocals.onnx`).
 `worker.js` does the STFT (4096/1024), runs the model on the section of the song you picked, builds a soft mask, and inverts the STFT.
 Instrumental = mix - vocals, so the two always sum to the original. A real acapella upload still sounds better.
+
+## Preview vs Render
+- **Preview** plays live in the page (fast settings). 
+- **Render** (`🎬 Render`) builds the final video offline, frame by frame, so it looks and sounds the same on any computer:
+  voices re-made with slower, cleaner settings (Piper noise 0.2, Pocket TTS 4 flow steps), audio mixed with `OfflineAudioContext`
+  through a voice bus (EQ, presence, gentle compression, short room reverb) and a master stage (-14 dBFS RMS, soft limiter),
+  frames drawn at up to 1080x1920 / 60 fps with motion blur (3 sub-frames), glow, comet trails, camera shake and vignette,
+  encoded with WebCodecs (H.264 + AAC if the browser can, else H.264 + Opus or VP9 + Opus) and muxed with
+  [mp4-muxer](https://github.com/Vanilagy/mp4-muxer) / [webm-muxer](https://github.com/Vanilagy/webm-muxer) (MIT, bundled in `ai/render/muxers.js`).

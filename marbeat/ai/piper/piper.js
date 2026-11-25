@@ -33,12 +33,12 @@ export async function createPiper(base,onProgress){
     m.callMain(["-l",cfg.espeak.voice,"--input",JSON.stringify(words.map(w=>({text:w}))),"--espeak_data","/espeak-ng-data"]);
     return lines;
   }
-  async function synth(ids,speaker,lengthScale){
+  async function synth(ids,speaker,lengthScale,noiseScale,noiseW){
     const inf=cfg.inference;
     const feeds={
       input:new ort.Tensor("int64",BigInt64Array.from(ids,x=>BigInt(x)),[1,ids.length]),
       input_lengths:new ort.Tensor("int64",BigInt64Array.from([BigInt(ids.length)]),[1]),
-      scales:new ort.Tensor("float32",Float32Array.from([inf.noise_scale,lengthScale||inf.length_scale,inf.noise_w]),[3]),
+      scales:new ort.Tensor("float32",Float32Array.from([noiseScale!==undefined?noiseScale:inf.noise_scale,lengthScale||inf.length_scale,noiseW!==undefined?noiseW:inf.noise_w]),[3]),
       sid:new ort.Tensor("int64",BigInt64Array.from([BigInt(speaker)]),[1])
     };
     const r=await session.run(feeds);
