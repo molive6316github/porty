@@ -78,3 +78,7 @@ Instrumental = mix - vocals, so the two always sum to the original. A real acape
 - **Sound:** voice bus (warmth, EQ, presence, light compression, stereo doubling, tempo-synced echo, room), synthesised sound effects
   from the real physics collisions (pegs, bumpers, ramps, marble-on-marble), a whoosh on every overtake and a finish stinger + cheer,
   then mastering to **-14 LUFS** (ITU BS.1770 K-weighted, gated) with a lookahead limiter (peaks stay under about -1.3 dBFS).
+
+## Windows app and updates
+`download/Marbeat.exe` is a launcher that serves this same web app from a local cache and updates itself from `manifest.json`.
+See `launcher/README.md` (in the main repo). After changing anything here, run `tools/build-launcher.sh` so `manifest.json` stays in sync.

@@ -30,7 +30,7 @@ async function fetchBuf(url,label){
   const out=new Uint8Array(got);let o=0;for(const p of parts){out.set(p,o);o+=p.length}return out.buffer;
 }
 async function load(){
-  const m=await import(ortBase+"ort.min.mjs");ort=m.default||m;ort.env.wasm.wasmPaths=ortBase;ort.env.wasm.numThreads=1;
+  const m=await import(ortBase+"ort.min.mjs");ort=m.default||m;ort.env.wasm.wasmPaths=ortBase;ort.env.wasm.numThreads=self.crossOriginIsolated?Math.min(4,self.navigator.hardwareConcurrency||2):1; // threads only work when cross-origin isolated (the Windows app)
   const o={executionProviders:["wasm"],graphOptimizationLevel:"all"};
   mV=await ort.InferenceSession.create(await fetchBuf(here+"vocals.onnx",""),o);
 }

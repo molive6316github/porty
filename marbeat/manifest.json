@@ -1,0 +1,246 @@
+{
+ "version": "723aa944c6d9",
+ "built": "2026-11-25T18:47:56Z",
+ "launcher": {
+  "version": "1",
+  "builds": {
+   "windows-amd64": {
+    "url": "download/Marbeat.exe",
+    "sha256": "8d38cecfb36b22799c441f3ed374a47d21e259ac7caaadebddcd2b49e7e91b6f"
+   }
+  }
+ },
+ "files": [
+  {
+   "path": "index.html",
+   "size": 136441,
+   "sha256": "c8b11b658cb882344408505c641ee416951f07f28d2d3788a9ecb292bda071ee",
+   "core": true
+  },
+  {
+   "path": "mespeak.bundle.js",
+   "size": 1889657,
+   "sha256": "0ca63ac712f35fc977a238cb5c697d08b3d04b62a97acaf01bf52dd58b9b2d90"
+  },
+  {
+   "path": "ai/ort-wasm-simd.wasm",
+   "size": 10014674,
+   "sha256": "9bd07bababc65f53d061f457233eeae501be7ceb8a2adb9eef52d87fe776d865"
+  },
+  {
+   "path": "ai/ort-wasm.wasm",
+   "size": 9223228,
+   "sha256": "bbdcb6b3c7d294577d806077630460be4e13ca35a345acb5e81188e9649fa74a"
+  },
+  {
+   "path": "ai/transformers.min.js",
+   "size": 897938,
+   "sha256": "bcf7cf304e51f470ed59409622b9d6ffbad80dfcf5baf6a40c919e4b9c4ff812"
+  },
+  {
+   "path": "ai/clone/CODE-LICENSE",
+   "size": 11357,
+   "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+  },
+  {
+   "path": "ai/clone/ort-wasm-simd-threaded.mjs",
+   "size": 24618,
+   "sha256": "b58de73c7b47b86290578489c6b5b16ade5d237cd5f340f0776a219bb833bd04"
+  },
+  {
+   "path": "ai/clone/ort-wasm-simd-threaded.wasm",
+   "size": 11241642,
+   "sha256": "704f51767fe3e11443aac6b5509c8654688e4cea3d988f96a069390b6eccbabc"
+  },
+  {
+   "path": "ai/clone/ort.min.mjs",
+   "size": 446164,
+   "sha256": "139580c307255a1db2a068de5a03b1f9a954174695ac07754916c5fbb5c3f4ed"
+  },
+  {
+   "path": "ai/clone/sentencepiece.js",
+   "size": 4020131,
+   "sha256": "fc802c6945931e685d82d0f601cda185bb43990870d712119caf5ea74e6e9c56"
+  },
+  {
+   "path": "ai/clone/worker.js",
+   "size": 34532,
+   "sha256": "e6cb34922600d0cb7bc992af16edbb577784aa0f56883f93715919c1d3398398"
+  },
+  {
+   "path": "ai/clone/onnx/english_2026-04/bos_before_voice.npy",
+   "size": 4224,
+   "sha256": "f46edf4f7007b7ba4ea58831f49d003e59e167b4641c44bb3addfe9231a780b1"
+  },
+  {
+   "path": "ai/clone/onnx/english_2026-04/bundle.json",
+   "size": 24381,
+   "sha256": "bab643150f437f37df080a710520ff39ed9ebd9a339f8ebdc739f7eddfc28b3f"
+  },
+  {
+   "path": "ai/clone/onnx/english_2026-04/flow_lm_flow_int8.onnx",
+   "size": 9962530,
+   "sha256": "3dd781ee5abee9e195320bf0106bebd6372a852b3b36352524ee78b40554635d"
+  },
+  {
+   "path": "ai/clone/onnx/english_2026-04/flow_lm_main_int8.onnx",
+   "size": 76341079,
+   "sha256": "f9bd8106b79a0192c1c43399ab938fb24900a95c1c599870d75a884e99000116"
+  },
+  {
+   "path": "ai/clone/onnx/english_2026-04/mimi_decoder_int8.onnx",
+   "size": 22684077,
+   "sha256": "3630450a3297a101792a6ac66619ebc70ab916b265e6220c2afaef8b1673f925"
+  },
+  {
+   "path": "ai/clone/onnx/english_2026-04/mimi_encoder_int8.onnx",
+   "size": 20779616,
+   "sha256": "abb46f1ad0b83c3840fe38c3652ab0eda7d1d97a63f1953bbbff5d04d8f4c855"
+  },
+  {
+   "path": "ai/clone/onnx/english_2026-04/text_conditioner_int8.onnx",
+   "size": 16388384,
+   "sha256": "24c0642bff11a4e1435c004d0c2aa6c68e093fadfa35f0f0dba849ac67f25ac3"
+  },
+  {
+   "path": "ai/clone/onnx/english_2026-04/tokenizer.model",
+   "size": 59339,
+   "sha256": "d461765ae179566678c93091c5fa6f2984c31bbe990bf1aa62d92c64d91bc3f6"
+  },
+  {
+   "path": "ai/models/Xenova/whisper-tiny.en/config.json",
+   "size": 2202,
+   "sha256": "37a1073be00d19118c06557896c7c148598f4d8277edc0f5bc07c9f5554839f1"
+  },
+  {
+   "path": "ai/models/Xenova/whisper-tiny.en/generation_config.json",
+   "size": 1590,
+   "sha256": "132c95ba9db45f4498f2eab3fea7c1d6a174005010f8f6b7d20cfd5e9795996b"
+  },
+  {
+   "path": "ai/models/Xenova/whisper-tiny.en/preprocessor_config.json",
+   "size": 339,
+   "sha256": "a6a76d28c93edb273669eb9e0b0636a2bddbb1272c3261e47b7ca6dfdbac1b8d"
+  },
+  {
+   "path": "ai/models/Xenova/whisper-tiny.en/tokenizer.json",
+   "size": 2128494,
+   "sha256": "c6ee8f089220a5b1188f6426456772572671c6141ae007eecb83c6a8349f5deb"
+  },
+  {
+   "path": "ai/models/Xenova/whisper-tiny.en/tokenizer_config.json",
+   "size": 835,
+   "sha256": "e082c1ad251541bf277967a703252cddd4bb37a71a43737e03d050c22ec08238"
+  },
+  {
+   "path": "ai/models/Xenova/whisper-tiny.en/onnx/decoder_model_merged_quantized.onnx",
+   "size": 30727382,
+   "sha256": "dbb2e063b7fbc41d9803b9698f93ecb035c50cbb3fb87b56cb131e4a5eb99059"
+  },
+  {
+   "path": "ai/models/Xenova/whisper-tiny.en/onnx/encoder_model_quantized.onnx",
+   "size": 10124913,
+   "sha256": "8cc3c6f8563d1b3fbd2c5af9f64c2bed8b020bc593c402d1ef53b9f08fbf1b90"
+  },
+  {
+   "path": "ai/piper/en_GB-vctk-medium.onnx",
+   "size": 76972979,
+   "sha256": "fc3d92d266b1a6c03af2a38215e0eee430ca7fb360f641d7c3dcb17c7670c0f3"
+  },
+  {
+   "path": "ai/piper/en_GB-vctk-medium.onnx.json",
+   "size": 8061,
+   "sha256": "8cc5a7678bf893c35cb6fde5d0812fb7e2b63e1eef54db250afd525277471f2d"
+  },
+  {
+   "path": "ai/piper/ort-wasm-simd.wasm",
+   "size": 10595041,
+   "sha256": "f533b5f21790563d7556c611c3835ac65848ee326da2689aac54ed7d9cc8c6a4"
+  },
+  {
+   "path": "ai/piper/ort-wasm.wasm",
+   "size": 9758086,
+   "sha256": "ebe7ec327f83aabc07e3b58487522481ccff10941f24182ab0428d0123652ff2"
+  },
+  {
+   "path": "ai/piper/ort.wasm.min.js",
+   "size": 142930,
+   "sha256": "90533a3fd7006df7f897c0d63c468996da5c8e430e39964d92ebe586c4996614"
+  },
+  {
+   "path": "ai/piper/piper-phonemize.mjs",
+   "size": 130569,
+   "sha256": "e2701cb8c73580ab395a67ad036ea1a4a9e50500c33c8b8499d159c3638451f3"
+  },
+  {
+   "path": "ai/piper/piper.js",
+   "size": 2717,
+   "sha256": "316eabed7212f3ded6b4d4b3b47e4d34bca702a036ff89d614348e28a041f728"
+  },
+  {
+   "path": "ai/piper/piper_phonemize.data",
+   "size": 18077249,
+   "sha256": "29f1025eb23a5b5c192cd14a6efbce4509402ff265405072ee6f7d1a09b78f8c"
+  },
+  {
+   "path": "ai/piper/piper_phonemize.wasm",
+   "size": 635212,
+   "sha256": "b777cd107a91d2bcc6a1ea46f2c26a662a7407394fe84589198aeaa83dd7a9d6"
+  },
+  {
+   "path": "ai/render/LICENSE-mp4-muxer",
+   "size": 1065,
+   "sha256": "75c54aae7ef6ad652f684f9dd3b71e4dcef86ccebd88cf441ceed7f5eec037c5"
+  },
+  {
+   "path": "ai/render/LICENSE-webm-muxer",
+   "size": 1065,
+   "sha256": "1619f937fa43f768d38d2bfb35d228258e0dffe1f71c4202b338df20e68ff680"
+  },
+  {
+   "path": "ai/render/muxers.js",
+   "size": 59159,
+   "sha256": "707dc28c1678fdbdc4c28ffc158bd4510ae4101c9bb053eea28dd9cc277b5a1d"
+  },
+  {
+   "path": "ai/sep/vocals.onnx",
+   "size": 39318336,
+   "sha256": "bdc16ab6bf6117ddd4842c19e80e40e2be188fc555295064d424616b0224ac97"
+  },
+  {
+   "path": "ai/sep/worker.js",
+   "size": 5493,
+   "sha256": "de18d15e39fd77361f4fb47d15e7a2bee6ad529261316272428b67525ae9c42d"
+  },
+  {
+   "path": "ai/vc/hifigan_knnvc.onnx",
+   "size": 66133611,
+   "sha256": "47ac3ce468e96476b432ad40977a9e90ff9a25bdefe7f2352fdba883997c6671"
+  },
+  {
+   "path": "ai/vc/hifigan_parity_report.json",
+   "size": 335,
+   "sha256": "2fa5b590416a71eedb60dd700c18611a31c20a55e03cf86c70bcac7645184ce2"
+  },
+  {
+   "path": "ai/vc/wavlm_mm8.part00",
+   "size": 72000000,
+   "sha256": "6b6ce7293ff757da11c32415189e9fba758bfcd289dfb3963168b7e1ec9c82cd"
+  },
+  {
+   "path": "ai/vc/wavlm_mm8.part01",
+   "size": 67975813,
+   "sha256": "09b5b7e53daa02d6a5b81c0d175d45143808f4aac6cc48f6bf62aeb90a9f6a27"
+  },
+  {
+   "path": "ai/vc/wavlm_parity_report.json",
+   "size": 337,
+   "sha256": "5ac3d3217eb1a55943d7ea83804bb1e85a92c811874552888e1633035ec554ac"
+  },
+  {
+   "path": "ai/vc/worker.js",
+   "size": 6030,
+   "sha256": "bcf3f0ac7359e4638fa3a882509887e08afb9da70559c91ed395134c7becdf7b"
+  }
+ ]
+}

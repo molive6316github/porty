@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Marbeat – song to marble race video</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 64 64%27%3E%3Cdefs%3E%3CradialGradient id=%27g%27 cx=%2738%25%27 cy=%2732%25%27 r=%2770%25%27%3E%3Cstop offset=%270%27 stop-color=%27%23ffd0e8%27/%3E%3Cstop offset=%27.45%27 stop-color=%27%23ff4d8d%27/%3E%3Cstop offset=%271%27 stop-color=%27%236c5cff%27/%3E%3C/radialGradient%3E%3C/defs%3E%3Ccircle cx=%2732%27 cy=%2732%27 r=%2728%27 fill=%27url(%23g)%27/%3E%3Cellipse cx=%2724%27 cy=%2722%27 rx=%277%27 ry=%274.5%27 fill=%27white%27 opacity=%27.85%27/%3E%3C/svg%3E">
 <style>
 :root{--bg:#0b0b12;--card:#15151f;--line:#262636;--tx:#f2f2f7;--mut:#8b8ba3;--ac:#ff4d8d;--ac2:#6c5cff}
 *{box-sizing:border-box}
@@ -73,6 +74,8 @@ textarea{width:100%;min-height:84px;background:#0e0e17;border:1px solid var(--li
   <h1>Turn any song into a <span>marble race video</span></h1>
   <p>Drop a track, give each marble a voice. Whoever's leading is who you hear. Renders in your browser. Nothing gets uploaded.</p>
   <a class="btn" href="#studio">Start a race →</a>
+  <a class="btn ghost" id="getApp" href="download/Marbeat.exe" download style="margin-left:8px">⬇ Get the Windows app</a>
+  <p class="note" id="getAppNote" style="max-width:520px;margin:12px auto 0">Windows 10/11 · about 7 MB · updates itself · keeps what you use for offline. It isn't code-signed, so Windows may say "Windows protected your PC": choose <b>More info → Run anyway</b>. It opens in its own window using Microsoft Edge or Chrome.</p>
 </div>
 
 <section id="how">
@@ -210,7 +213,16 @@ So cheer for your favourite one and watch them go go go</textarea>
   <details><summary>Video format?</summary><p>Whatever your browser's recorder supports: MP4 in recent Chrome/Safari, otherwise WebM.</p></details>
 </section>
 
-<footer>Marbeat · independent project · not affiliated with any other marble race tool</footer>
+<footer>Marbeat · independent project · not affiliated with any other marble race tool
+  <div id="appBox" style="display:none;margin-top:14px;font-size:13px">
+    <div id="appInfo"></div>
+    <div style="margin-top:8px;display:flex;gap:8px;justify-content:center;flex-wrap:wrap">
+      <button class="btn ghost sm" id="appUpd">Check for updates</button>
+      <button class="btn ghost sm" id="appOffline">Save everything for offline use</button>
+      <button class="btn ghost sm" id="appReload" style="display:none">Reload to use the update</button>
+    </div>
+  </div>
+</footer>
 
 <script>
 // Load the speech engine from this app's own folder, even if the page was opened as /marbeat (no trailing slash)
@@ -2016,6 +2028,22 @@ setInterval(()=>{
 window.addEventListener("error",e=>{logLine("ERROR: "+(e.message||e));});
 window.addEventListener("unhandledrejection",e=>{const m=e.reason&&e.reason.message||String(e.reason);logLine("ERROR: "+m);if(m!=="cancelled"){busyAt=0;setStatus("Something failed: "+m+". See Diagnostics below.");$("go").disabled=!songBuf;$("stop").disabled=true}});
 logLine("Marbeat ready · base "+APP_BASE+" · cores "+(navigator.hardwareConcurrency||"?")+" · memory "+(navigator.deviceMemory||"?")+" GB");
+(async()=>{ // the Windows app talks to its launcher on this same address; on the website these calls simply fail
+  $("getApp").href=APP_BASE+"download/Marbeat.exe";
+  let info;try{const r=await fetch("/__marbeat/ping",{cache:"no-store"});if(!r.ok)return;info=await r.json();if(info.app!=="marbeat-launcher")return}catch(e){return}
+  window.IN_APP=true;$("getApp").style.display="none";$("getAppNote").style.display="none";$("appBox").style.display="block";
+  const st=()=>fetch("/__marbeat/status",{cache:"no-store"}).then(r=>r.json());
+  const show=s=>{$("appInfo").textContent=`Marbeat app v${info.launcher} · content ${s.contentVersion||"?"} · ${s.online?"online":"offline, using your saved copy"}`+
+    (s.phase==="prefetching"?` · saving everything… ${s.done}/${s.total} files (${(s.bytes/1e6).toFixed(0)} MB)`:"")+(s.updateNote?` · ${s.updateNote}`:"")+(s.phase==="error"?` · ${s.message}`:"")};
+  const wait=async(until)=>{for(let i=0;i<2000;i++){const s=await st();show(s);if(until(s))return s;await new Promise(r=>setTimeout(r,600))}};
+  const s0=await st();show(s0);const v0=s0.contentVersion;
+  $("appUpd").onclick=async()=>{$("appUpd").disabled=true;await fetch("/__marbeat/refresh");await new Promise(r=>setTimeout(r,300));
+    const s=await wait(x=>x.phase==="ready"||x.phase==="offline"||x.phase==="error");$("appUpd").disabled=false;
+    if(s.contentVersion&&s.contentVersion!==v0){$("appReload").style.display="inline-block";$("appInfo").textContent+=" · update ready"}else $("appInfo").textContent+=" · you're up to date"};
+  $("appOffline").onclick=async()=>{$("appOffline").disabled=true;await fetch("/__marbeat/prefetch");await new Promise(r=>setTimeout(r,300));await wait(x=>x.phase!=="prefetching");$("appOffline").disabled=false};
+  $("appReload").onclick=()=>location.reload();
+  setInterval(async()=>{try{show(await st())}catch(e){}},5000);
+})();
 const mapSel=$("map");for(const k in MAPS)mapSel.add(new Option(MAPS[k].label,k));
 initMarbles();
 </script>
