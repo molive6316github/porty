@@ -96,6 +96,9 @@ textarea{width:100%;min-height:84px;background:#0e0e17;border:1px solid var(--li
       <label style="display:flex;gap:8px;align-items:center;margin:0"><input type="checkbox" id="rec" checked> Record video while racing</label>
       <div id="status">Load a song to begin.</div>
       <a id="dl" class="btn" style="display:none">⬇ Download video</a>
+      <details style="width:100%;max-width:360px;font-size:12px;color:var(--mut)"><summary>Diagnostics (what is it doing?)</summary>
+        <pre id="diagLog" style="white-space:pre-wrap;max-height:200px;overflow:auto;margin:6px 0;font-size:11px"></pre>
+        <button class="btn ghost sm" id="copyLog">Copy log</button></details>
     </div>
     <div>
       <div class="panel">
@@ -222,7 +225,14 @@ const VKEYS=Object.keys(VOICES);
 let actx=null,songBuf=null,peaks=null,beatsAll=[],marbles=[],songId=0;
 let run=null,lastRun=null,idleCourse=null,idleKey="";
 const voiceCache=new Map();
-const sleep=()=>new Promise(r=>setTimeout(r,0));
+let prepAbort=false,busyAt=0,curStatus="",statusAt=Date.now();
+const T0=Date.now(),LOG=[];
+function logLine(m){LOG.push(((Date.now()-T0)/1000).toFixed(1).padStart(6)+"s  "+m);if(LOG.length>400)LOG.shift();const el=document.getElementById("diagLog");if(el){el.textContent=LOG.slice(-60).join("\n");el.scrollTop=el.scrollHeight}}
+const sleep=()=>new Promise((r,j)=>setTimeout(()=>prepAbort?j(new Error("cancelled")):r(),0)); // also lets Stop cancel any long step
+async function withBusy(fn){
+  const was=busyAt;if(!was){busyAt=Date.now();prepAbort=false;$("stop").disabled=false}
+  try{return await fn()}finally{if(!was)busyAt=0}
+}
 
 // ---------- setup UI ----------
 const countSel=$("count");
@@ -245,7 +255,7 @@ function initMarbles(){
     f.onchange=async()=>{if(!f.files[0])return;ensureCtx();try{m.buf=await actx.decodeAudioData(await f.files[0].arrayBuffer());m.fname=f.files[0].name;m.bufId=Math.random();setStatus(`Voice file loaded for ${m.name}.`)}catch(e){setStatus("Couldn't decode that file.")}};
     clIn.onchange=async()=>{
       if(!clIn.files[0])return;const file=clIn.files[0];
-      try{
+      try{await withBusy(async()=>{
         setStatus("Reading your voice sample…");
         const pr=await prepClone(file);
         const name="v"+Math.random().toString(36).slice(2,8);
@@ -253,7 +263,7 @@ function initMarbles(){
         m.clone={name,f0:pr.f0,fname:file.name.slice(0,22)};
         setStatus(`Voice cloned for ${m.name} (${pr.f0?Math.round(pr.f0)+" Hz":"pitch unknown"}). It sings whenever ${m.name} leads.`);
         initMarbles();
-      }catch(e){setStatus("Cloning failed: "+(e&&e.message||e)+". Open Marbeat from its web address, not the file.");clIn.value=""}
+      })}catch(e){setStatus(e&&e.message==="cancelled"?"Cancelled.":"Cloning failed: "+(e&&e.message||e)+". Open Marbeat from its web address, not the file.");clIn.value=""}
     };
     clX.onclick=()=>{m.clone=null;initMarbles();setStatus("Cloned voice removed.")};
     box.appendChild(d);
@@ -291,7 +301,7 @@ $("dirAuto").onclick=()=>{
 function fillWinner(){const w=$("winner"),v=w.value;w.innerHTML="";w.add(new Option("Random","-1"));marbles.forEach((m,i)=>w.add(new Option(m.name,i)));if([...w.options].some(o=>o.value===v))w.value=v}
 countSel.onchange=initMarbles;
 $("reroll").onclick=()=>{$("seed").value=Math.floor(Math.random()*99999);idleDraw()};
-function setStatus(s){$("status").textContent=s}
+function setStatus(s){curStatus=s;statusAt=Date.now();$("status").textContent=s;logLine(s)}
 function ensureCtx(){if(!actx)actx=new (window.AudioContext||window.webkitAudioContext)();if(actx.state==="suspended")actx.resume()}
 
 // ---------- song load, waveform, beats ----------
@@ -416,7 +426,7 @@ function simulate(course,n,beats,nudgeSeed,seedStr,maxT,sched){
   for(let i=0;i<n;i++){const row=i%2,col=Math.floor(i/2),per=Math.ceil(n/2);
     ms.push({x:70+(W-140)*((col+(row?.5:0)+R0()*.2)/Math.max(1,per-.5)),y:50+row*36,vx:(R0()-.5)*30,vy:0,fin:-1,still:0})}
   const maxF=Math.ceil(maxT*FPS)+1,pos=new Float32Array(maxF*n*2),lead=new Int8Array(maxF),cam=new Float32Array(maxF);
-  let f=0,bi=0,camY=300,winner=-1,done=0,endF=-1,di=-1;
+  let f=0,bi=0,camY=300,winner=-1,done=0,endF=-1,di=-1,winF=-1;
   const DT=1/120;
   for(;f<maxF;f++){
     const t=f/FPS;
@@ -426,6 +436,7 @@ function simulate(course,n,beats,nudgeSeed,seedStr,maxT,sched){
     for(let i=0;i<n;i++){const sc=ms[i].fin>=0?1e9-ms[i].fin:ms[i].y;if(sc>best){best=sc;L=i}}
     lead[f]=L;
     const ly=Math.max(...ms.map(m=>m.y));camY+=(Math.min(ly,finishY-80)-camY)*.1;cam[f]=camY;
+    if(winF>=0&&endF<0&&f>=winF+Math.floor(3*FPS))endF=f;
     if(done===n&&endF<0)endF=f+FPS;
     if(endF>=0&&f>=endF){f++;break}
     // beat kicks
@@ -455,7 +466,7 @@ function simulate(course,n,beats,nudgeSeed,seedStr,maxT,sched){
             const rx=m.x-sp2.cx,ry=m.y-sp2.cy;m.vx+=-ry*sp2.w*.35*DT*60*.1;m.vy+=rx*sp2.w*.35*DT*60*.1}}}
         // stuck guard
         if(Math.hypot(m.vx,m.vy)<12&&m.y<finishY){m.still++;if(m.still>150){m.vx+=(m.x<W/2?1:-1)*(220+Rn()*160);m.vy-=160;m.still=0}}else m.still=0;
-        if(m.fin<0&&m.y>finishY){m.fin=st;done++;if(winner<0)winner=ms.indexOf(m)}
+        if(m.fin<0&&m.y>finishY){m.fin=st;done++;if(winner<0){winner=ms.indexOf(m);winF=f}}
       }
       for(let i=0;i<n;i++)for(let j=i+1;j<n;j++){
         const a=ms[i],b=ms[j];let dx=b.x-a.x,dy=b.y-a.y;const d2=dx*dx+dy*dy,rr=RAD*2;
@@ -483,7 +494,9 @@ function evalSched(sim,K,f2){
 async function buildRaceTL(len,beats,n){
   const seedStr=$("seed").value,mapKey=$("map").value;let Hc=len*210,course,sim,bestC=null;
   const base=hashSeed(seedStr+"|n");
+  const tCal=performance.now();
   for(let it=0;it<7;it++){
+    if(it>=2&&performance.now()-tCal>10000)break; // slow device: take the best course found so far
     setStatus(`Building course… (${it+1})`);await sleep();
     course=buildCourse(Hc,seedStr,mapKey);sim=simulate(course,n,beats,base,seedStr,len*3,null);
     const ratio=(len-2.5)/sim.Twin,err=Math.abs(Math.log(ratio));
@@ -495,8 +508,10 @@ async function buildRaceTL(len,beats,n){
   const K=getSchedule(len,n);
   if(K.length){
     let factor=sim.Twin/Math.max(1,len-2),best=null;
+    const tDir=performance.now();
     for(let k=0;k<16;k++){
-      if(k%2===0){setStatus(`Directing overtakes… try ${k+1}/16`);await sleep()}
+      if(k>=2&&performance.now()-tDir>14000)break; // time limit: keep the best attempt
+      setStatus(`Directing overtakes… try ${k+1}/16`);await sleep();
       const sc=K.map(x=>({ts:x.t*factor-2.4,m:x.m}));
       const s2=simulate(course,n,beats,base+k*7919,seedStr,len*3,sc);
       const f2=s2.Twin/Math.max(1,len-2),score=evalSched(s2,K,f2);
@@ -726,7 +741,7 @@ function calibrateSlots(slots,s,len){
   const base=score(0);let best=0,bs=base;
   for(let off=-.25;off<=.2501;off+=.01){const sc=score(off);if(sc>bs){bs=sc;best=off}}
   if(Math.abs(best)<.015||bs<base*1.08)return{slots,shift:0};
-  return{slots:slots.map(x=>({...x,t0:x.t0+best,t1:x.t1+best})),shift:best};
+  return{slots:slots.map(x=>({...x,t0:Math.max(.02,Math.min(len-.3,x.t0+best)),t1:Math.max(.14,Math.min(len,x.t1+best))})),shift:best};
 }
 function computeSlots(beats,len,text,mode,s,off,loop){
   const raw=computeSlotsRaw(beats,len,text,mode,s,off,loop);lastCal=0;
@@ -807,9 +822,10 @@ function melodyOffsets(s,len,slots){
   const val=f0s.filter(f=>f>0).sort((a,b)=>a-b),ref=val.length?val[Math.floor(val.length/2)]:0;
   let prev=0;return f0s.map(f=>{if(f>0&&ref>0)prev=Math.max(-22,Math.min(22,12*Math.log2(f/ref)*2.2));return prev});
 }
-async function synthTrack(vkey,slots,offs,len){
+async function synthTrack(vkey,slots,offs,len,needFn){
   const v=VDEF[vkey],SR=22050,out=new Float32Array(Math.floor(len*SR));
   for(let i=0;i<slots.length;i++){
+    if(needFn&&!needFn(i))continue; // this voice never sings this word
     const sl=slots[i],pitch=v.pitch+offs[i]*v.mel,dur0=Math.min(1.3,sl.t1-sl.t0);let spd=v.speed;
     let w=speakWord(sl.text,v,pitch,spd);
     // stretch or squeeze each word to fill its slot so the singing sits on the vocal hits
@@ -856,9 +872,9 @@ async function voiceBuffer(m,s,len,vc,mi){
     if(voiceCache.has(key))return voiceCache.get(key);
     out=await neuralTrack(m,mi,vc,len);sr=22050;
   }else if(vc.engine==="sing"){
-    key=`${songId}|sing|${m.preset}|${s}|${len}|${vc.slotHash}|${vc.melody}`;
+    key=`${songId}|sing|${m.preset}|${s}|${len}|${vc.slotHash}|${vc.melody}|${hashStr(vc.slots.map((_,i)=>vc.need[i].has(mi)?1:0).join(""))}`;
     if(voiceCache.has(key))return voiceCache.get(key);
-    out=await synthTrack(m.preset,vc.slots,vc.offs,len);sr=22050;
+    out=await synthTrack(m.preset,vc.slots,vc.offs,len,i=>vc.need[i].has(mi));sr=22050;
   }else{
     key=`${songId}|remix|${m.preset}|${s}|${len}`;if(voiceCache.has(key))return voiceCache.get(key);
     sr=songBuf.sampleRate;const a=Math.floor(s*sr),N=Math.floor(len*sr),ch=songBuf.getChannelData(0),seg=new Float32Array(N);
@@ -1158,7 +1174,8 @@ function aiKeyNow(){
   const len=Math.min(+$("len").value,songBuf.duration);
   return `${songId}|${+$("start").value}|${len}|${hashStr($("lyrics").value.trim())}`;
 }
-async function runAI(){
+async function runAI(){return withBusy(runAIInner)}
+async function runAIInner(){
   if(!songBuf){setStatus("Load a song first.");return false}
   ensureCtx();
   const text=$("lyrics").value.trim(),words=text.split(/\s+/).filter(Boolean);
@@ -1272,6 +1289,15 @@ $("prevSync").onclick=previewSync;$("tapSync").onclick=startTap;
 
 // ================= PLAYBACK + RECORDING =================
 async function startRun(){
+  return withBusy(async()=>{
+    try{await startRunInner()}
+    catch(e){
+      const m=e&&e.message||String(e);logLine((m==="cancelled"?"CANCELLED":"FAILED: "+m)+(e&&e.stack?"\n"+e.stack.split("\n").slice(0,3).join("\n"):""));
+      setStatus(m==="cancelled"?"Cancelled.":"Something failed: "+m+". See Diagnostics below.");
+    }finally{if(!run){$("go").disabled=!songBuf;$("stop").disabled=true}}
+  });
+}
+async function startRunInner(){
   if(!songBuf)return;ensureCtx();stopRun(true);stopAux(true);$("dl").style.display="none";$("go").disabled=true;
   const len=Math.min(+$("len").value,songBuf.duration),s=+$("start").value,n=marbles.length;
   const beats=beatsAll.filter(t=>t>=s&&t<s+len).map(t=>t-s);
@@ -1290,16 +1316,18 @@ async function startRun(){
     vc.slotHash=hashStr(vc.slots.map(x=>x.t0.toFixed(2)+x.text).join("|"));
     // which marbles lead at any point while each word is sung (only those voices need to sing it)
     vc.need=vc.slots.map(sl=>{
-      const set=new Set(),f0=Math.floor(sl.t0*FPS),f1=Math.min(tl.F,Math.floor(sl.t1*FPS));
-      for(let f=f0;f<=f1;f+=3)set.add(tl.kind==="race"?tl.leadA[Math.min(f,tl.F)]:pathState(tl,f/FPS).voice);
-      set.add(tl.kind==="race"?tl.leadA[Math.min(f1,tl.F)]:pathState(tl,f1/FPS).voice);
+      const set=new Set(),f0=Math.max(0,Math.min(tl.F,Math.floor(sl.t0*FPS))),f1=Math.max(f0,Math.min(tl.F,Math.floor(sl.t1*FPS)));
+      const who=f=>tl.kind==="race"?tl.leadA[f]:pathState(tl,f/FPS).voice;
+      for(let f=f0;f<=f1;f+=3){const v=who(f);if(v!==undefined&&v>=0&&v<marbles.length)set.add(v)}
+      const v2=who(f1);if(v2!==undefined&&v2>=0&&v2<marbles.length)set.add(v2);
+      if(!set.size)set.add(0);
       return set;
     });
     const cpairs=[];
     vc.slots.forEach((sl,i)=>vc.need[i].forEach(mi=>{const mm=marbles[mi];if(mm.clone)cpairs.push({name:mm.clone.name,word:sl.text})}));
     if(cpairs.length){
       try{await prepareClone(cpairs)}
-      catch(e){console.warn(e);vc.noClone=true;setStatus("Cloned voices failed ("+(e&&e.message||e)+"). Using the preset voices instead.");await sleep()}
+      catch(e){if(e&&e.message==="cancelled")throw e;console.warn(e);vc.noClone=true;setStatus("Cloned voices failed ("+(e&&e.message||e)+"). Using the preset voices instead.");await sleep()}
     }
     vc.neural=$("voiceq").value==="neural";
     if(vc.neural){
@@ -1308,6 +1336,7 @@ async function startRun(){
         const pairs=[];vc.slots.forEach((sl,i)=>vc.need[i].forEach(mi=>{if(marbles[mi].clone&&!vc.noClone)return;pairs.push({sid:VDEF[marbles[mi].preset].sid,word:sl.text})}));
         await prepareRaw(pi,pairs);
       }catch(e){
+        if(e&&e.message==="cancelled")throw e;
         console.warn(e);vc.neural=false;
         setStatus("Neural voices couldn't load ("+(e&&e.message||e)+"). Using robot voices. Open Marbeat from its web address, not the file.");await sleep();
       }
@@ -1316,7 +1345,7 @@ async function startRun(){
   }
   const bufs=[];
   try{for(let i=0;i<n;i++){setStatus(`Synthesizing voices… ${i+1}/${n} (${VOICES[marbles[i].preset]})`);await sleep();bufs.push(await voiceBuffer(marbles[i],s,len,vc,i))}}
-  catch(e){setStatus("Voice synthesis failed: "+e.message);$("go").disabled=false;return}
+  catch(e){if(e&&e.message==="cancelled")throw e;setStatus("Voice synthesis failed: "+e.message);$("go").disabled=false;return}
   const master=actx.createGain(),dest=actx.createMediaStreamDestination();
   const comp=actx.createDynamicsCompressor();comp.threshold.value=-20;comp.knee.value=12;comp.ratio.value=4;comp.attack.value=.004;comp.release.value=.18;
   const makeup=actx.createGain();makeup.gain.value=1.8; // overall loudness
@@ -1368,10 +1397,19 @@ function stopRun(silent){
   cancelAnimationFrame(run.raf);try{run.srcs.forEach(s=>s.stop())}catch(e){}
   run=null;$("go").disabled=!songBuf;$("stop").disabled=true;if(!silent)setStatus("Stopped.");idleDraw();
 }
-$("go").onclick=startRun;$("stop").onclick=()=>{stopAux(true);stopRun(false)};
+$("copyLog").onclick=async()=>{const t=LOG.join("\n");try{await navigator.clipboard.writeText(t);setStatus("Log copied.")}catch(e){const el=$("diagLog");el.textContent=t}};
+$("go").onclick=startRun;$("stop").onclick=()=>{if(busyAt)prepAbort=true;stopAux(true);stopRun(false)};
 ["mode","winner","seed","len","start","engine","map"].forEach(id=>$(id).addEventListener("change",idleDraw));
 $("seed").addEventListener("input",idleDraw);
 
+setInterval(()=>{
+  if(!busyAt)return;
+  const el=Math.round((Date.now()-busyAt)/1000),idle=Math.round((Date.now()-statusAt)/1000);
+  $("status").textContent=curStatus+" · "+el+"s"+(idle>=20?` · same step for ${idle}s, still working. Press Stop to cancel, or see Diagnostics`:"");
+},1000);
+window.addEventListener("error",e=>{logLine("ERROR: "+(e.message||e));});
+window.addEventListener("unhandledrejection",e=>{const m=e.reason&&e.reason.message||String(e.reason);logLine("ERROR: "+m);if(m!=="cancelled"){busyAt=0;setStatus("Something failed: "+m+". See Diagnostics below.");$("go").disabled=!songBuf;$("stop").disabled=true}});
+logLine("Marbeat ready · base "+APP_BASE+" · cores "+(navigator.hardwareConcurrency||"?")+" · memory "+(navigator.deviceMemory||"?")+" GB");
 const mapSel=$("map");for(const k in MAPS)mapSel.add(new Option(MAPS[k].label,k));
 initMarbles();
 </script>
