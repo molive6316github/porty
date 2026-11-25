@@ -96,7 +96,7 @@ textarea{width:100%;min-height:84px;background:#0e0e17;border:1px solid var(--li
       <div style="width:100%;max-width:360px;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px">
         <div style="font-size:13px;font-weight:700;margin-bottom:6px">🎬 Render a finished video</div>
         <div class="row">
-          <select id="rquality"><option value="draft">Draft · 540p · 30 fps (quick check)</option><option value="std" selected>HD · 1080×1920 · 30 fps</option><option value="hi">HD · 1080×1920 · 60 fps + motion blur (slowest)</option></select>
+          <select id="rquality"><option value="draft">Draft · 540p · 30 fps (quick check)</option><option value="std" selected>HD · 1080×1920 · 30 fps (about 2× the clip length on a fast PC)</option><option value="hi">HD+ · 1080×1920 · 60 fps + motion blur (about 8× the clip length on a fast PC, much more on a Chromebook)</option></select>
           <button class="btn" id="render" style="flex:0 0 auto">Render</button>
         </div>
         <p class="note" style="margin:6px 0 0">Preview is the quick live version. Render draws every frame itself with glow, trails and a mastered mix, then makes an MP4 (or WebM). It takes a while, and looks and sounds the same on any computer.</p>
@@ -129,6 +129,8 @@ textarea{width:100%;min-height:84px;background:#0e0e17;border:1px solid var(--li
           <option value="race">Marble Race</option>
           <option value="path">Musical Path</option>
         </select>
+        <label>Title for the render (optional, shows at the start)</label>
+        <input type="text" id="vtitle" maxlength="40" placeholder="e.g. WHICH VOICE WINS?">
         <label>Map</label>
         <select id="map"></select>
         <div class="row">
@@ -173,6 +175,7 @@ So cheer for your favourite one and watch them go go go</textarea>
         <label class="chk"><input type="checkbox" id="loop"> Repeat lyrics (only if they're shorter than the section)</label>
         <label>Nudge: <span id="syncLbl">0.00</span>s (negative = earlier, positive = later)</label>
         <input type="range" id="syncoff" min="-0.6" max="0.6" step="0.02" value="0" oninput="document.getElementById('syncLbl').textContent=(+this.value).toFixed(2)">
+        <label class="chk"><input type="checkbox" id="sfx" checked> Marble sound effects (ticks, bumpers, whoosh on overtakes, finish)</label>
         <label class="chk"><input type="checkbox" id="autoft" checked> Auto fine-tune timing (lines words up with the song's vocal hits)</label>
         <label class="chk"><input type="checkbox" id="melody" checked> Follow the song's melody (rough)</label>
         <label class="chk"><input type="checkbox" id="novox"> Reduce original vocals (stereo songs)</label>
@@ -431,7 +434,7 @@ function buildCourse(Hc,seedStr,mapKey){
     const lo=Math.floor((Math.min(s.y1,s.y2)-s.r-PAD)/BAND),hi=Math.floor((Math.max(s.y1,s.y2)+s.r+PAD)/BAND);
     for(let b=Math.max(0,lo);b<=Math.min(bands.length-1,hi);b++)bands[b].push(i);
   });
-  return{segs,spins,bands,finishY,floorY,Hc,pal:palFor(mapKey,seedStr)};
+  return{segs,spins,bands,finishY,floorY,Hc,pal:palFor(mapKey,seedStr),mapKey};
 }
 function hitSeg(m,x1,y1,x2,y2,r,e){
   const dx=x2-x1,dy=y2-y1,l2=dx*dx+dy*dy;let u=l2?((m.x-x1)*dx+(m.y-y1)*dy)/l2:0;u=u<0?0:u>1?1:u;
@@ -440,7 +443,8 @@ function hitSeg(m,x1,y1,x2,y2,r,e){
   const d=Math.sqrt(d2);if(d<1e-6){nx=0;ny=-1}else{nx/=d;ny/=d}
   m.x=cx+nx*rr;m.y=cy+ny*rr;
   const vn=m.vx*nx+m.vy*ny;
-  if(vn<0){m.vx-=(1+e)*vn*nx;m.vy-=(1+e)*vn*ny;m.vx*=.998}
+  if(vn<0){m.vx-=(1+e)*vn*nx;m.vy-=(1+e)*vn*ny;m.vx*=.998;return -vn}
+  return 0;
 }
 function simulate(course,n,beats,nudgeSeed,seedStr,maxT,sched){
   const R0=rng(hashSeed(seedStr+"|start")),Rn=rng(nudgeSeed>>>0),{segs,spins,bands,finishY}=course;
@@ -448,7 +452,7 @@ function simulate(course,n,beats,nudgeSeed,seedStr,maxT,sched){
   for(let i=0;i<n;i++){const row=i%2,col=Math.floor(i/2),per=Math.ceil(n/2);
     ms.push({x:70+(W-140)*((col+(row?.5:0)+R0()*.2)/Math.max(1,per-.5)),y:50+row*36,vx:(R0()-.5)*30,vy:0,fin:-1,still:0})}
   const maxF=Math.ceil(maxT*FPS)+1,pos=new Float32Array(maxF*n*2),lead=new Int8Array(maxF),cam=new Float32Array(maxF);
-  let f=0,bi=0,camY=300,winner=-1,done=0,endF=-1,di=-1,winF=-1;
+  let f=0,bi=0,camY=300,winner=-1,done=0,endF=-1,di=-1,winF=-1;const events=[];
   const DT=1/120;
   for(;f<maxF;f++){
     const t=f/FPS;
@@ -481,7 +485,9 @@ function simulate(course,n,beats,nudgeSeed,seedStr,maxT,sched){
         m.x+=m.vx*DT;m.y+=m.vy*DT;
         if(m.x<RAD){m.x=RAD;m.vx=Math.abs(m.vx)*.5}else if(m.x>W-RAD){m.x=W-RAD;m.vx=-Math.abs(m.vx)*.5}
         const bl=bands[Math.max(0,Math.min(bands.length-1,Math.floor(m.y/BAND)))];
-        for(let k=0;k<bl.length;k++){const sg=segs[bl[k]];hitSeg(m,sg.x1,sg.y1,sg.x2,sg.y2,sg.r,sg.e)}
+        for(let k=0;k<bl.length;k++){const sg=segs[bl[k]],imp=hitSeg(m,sg.x1,sg.y1,sg.x2,sg.y2,sg.r,sg.e);
+          if(imp>140&&f-(m.lastEv||-9)>2){m.lastEv=f;events.push({f,k:sg.k==="peg"?0:sg.k==="bump"?1:2,v:imp,x:m.x})} // for the sound effects
+        }
         for(const sp2 of spins){if(Math.abs(m.y-sp2.cy)<sp2.len+30){const a=sp2.ph+sp2.w*st,c=Math.cos(a)*sp2.len,sn=Math.sin(a)*sp2.len;
           const px=m.x,py=m.y;hitSeg(m,sp2.cx-c,sp2.cy-sn,sp2.cx+c,sp2.cy+sn,sp2.r,.5);
           if(m.x!==px||m.y!==py){ // spin kick: add tangential push
@@ -495,12 +501,12 @@ function simulate(course,n,beats,nudgeSeed,seedStr,maxT,sched){
         if(d2<rr*rr&&d2>1e-9){const d=Math.sqrt(d2);dx/=d;dy/=d;const ov=(rr-d)/2;
           a.x-=dx*ov;a.y-=dy*ov;b.x+=dx*ov;b.y+=dy*ov;
           const vn=(b.vx-a.vx)*dx+(b.vy-a.vy)*dy;
-          if(vn<0){const j2=-(1+.6)*vn/2;a.vx-=j2*dx;a.vy-=j2*dy;b.vx+=j2*dx;b.vy+=j2*dy}}}
+          if(vn<0){const j2=-(1+.6)*vn/2;a.vx-=j2*dx;a.vy-=j2*dy;b.vx+=j2*dx;b.vy+=j2*dy;if(-vn>160&&f-(a.lastMM||-9)>3){a.lastMM=f;events.push({f,k:3,v:-vn,x:(a.x+b.x)/2})}}}}
     }
   }
   if(winner<0){let b=0;for(let i=1;i<n;i++)if(ms[i].y>ms[b].y)b=i;winner=b}
   const Twin=ms[winner].fin>=0?ms[winner].fin:maxT;
-  return{pos,lead,cam,F:f,Twin,winner,n,fins:ms.map(m=>m.fin)};
+  return{pos,lead,cam,F:f,Twin,winner,n,fins:ms.map(m=>m.fin),events};
 }
 function getSchedule(len,n){
   const K=dirKeys.filter(k=>k.m<n&&k.t>=0&&k.t<len-3).map(k=>({t:k.t,m:k.m})).sort((a,b)=>a.t-b.t);
@@ -571,7 +577,9 @@ function marbleDot(x,y,r,col,glow){
 // scene: course, P=[{x,y}], camY, pulse, leader, order, tSim(for spinners), overlay winner idx or -1
 function drawRaceScene(course,P,camY,pulse,leader,order,tSim,winnerIdx,fx){
   const pal=course.pal,off=H*.42-camY,top=camY-H*.42-60,bot=camY+H*.58+60;
-  g.save();g.translate(fx&&fx.shake?fx.shake[0]:0,off+(fx&&fx.shake?fx.shake[1]:0));
+  g.save();
+  if(fx&&fx.zoom&&fx.zoom!==1){g.translate(W/2,H*.5);g.scale(fx.zoom,fx.zoom);g.translate(-W/2,-H*.5)}
+  g.translate(fx&&fx.shake?fx.shake[0]:0,off+(fx&&fx.shake?fx.shake[1]:0));
   g.fillStyle="#ffffff18";for(let gy=Math.floor(top/70);gy<bot/70;gy++){for(let k=0;k<3;k++){const hx=((gy*7919+k*104729)%1000)/1000*W,hy=gy*70+((gy*31+k*17)%70);g.fillRect(hx,hy,2,2)}}
   // side walls + lane lines
   g.fillStyle="#1a1a2e";g.fillRect(-20,top,22,bot-top);g.fillRect(W-2,top,22,bot-top);
@@ -583,6 +591,7 @@ function drawRaceScene(course,P,camY,pulse,leader,order,tSim,winnerIdx,fx){
   for(const s of course.segs){
     if(Math.max(s.y1,s.y2)<top-30||Math.min(s.y1,s.y2)>bot+30)continue;
     const hue=(pal.hb+(s.y1*.17)%pal.hs)%360;
+    if(fx&&fx.pro){drawSegPro(s,hue,pulse);continue}
     if(s.k==="peg"){g.fillStyle=`hsl(${hue},80%,${60+pulse*25}%)`;g.beginPath();g.arc(s.x1,s.y1,s.r+pulse*3,0,6.28);g.fill()}
     else if(s.k==="bump"){g.fillStyle=`hsl(${(hue+120)%360},85%,${42+pulse*30}%)`;g.beginPath();g.arc(s.x1,s.y1,s.r+pulse*5,0,6.28);g.fill();g.fillStyle="#fff3";g.beginPath();g.arc(s.x1-s.r/4,s.y1-s.r/4,s.r/2.2,0,6.28);g.fill()}
     else{g.strokeStyle=`hsl(${hue},70%,${55+pulse*15}%)`;g.lineWidth=s.r*2;g.lineCap="round";g.beginPath();g.moveTo(s.x1,s.y1);g.lineTo(s.x2,s.y2);g.stroke()}
@@ -590,15 +599,20 @@ function drawRaceScene(course,P,camY,pulse,leader,order,tSim,winnerIdx,fx){
   for(const sp of course.spins){
     if(sp.cy<top-120||sp.cy>bot+120)continue;
     const a=sp.ph+sp.w*tSim,c=Math.cos(a)*sp.len,sn=Math.sin(a)*sp.len;
+    if(fx&&fx.pro){g.lineCap="round";g.strokeStyle="rgba(255,255,255,.12)";g.lineWidth=sp.r*5;g.beginPath();g.moveTo(sp.cx-c,sp.cy-sn);g.lineTo(sp.cx+c,sp.cy+sn);g.stroke()}
     g.strokeStyle=pal.sp;g.lineWidth=sp.r*2;g.lineCap="round";g.beginPath();g.moveTo(sp.cx-c,sp.cy-sn);g.lineTo(sp.cx+c,sp.cy+sn);g.stroke();
+    if(fx&&fx.pro){g.strokeStyle="rgba(255,255,255,.8)";g.lineWidth=sp.r*.6;g.beginPath();g.moveTo(sp.cx-c,sp.cy-sn-sp.r*.3);g.lineTo(sp.cx+c,sp.cy+sn-sp.r*.3);g.stroke()}
     g.fillStyle="#fff";g.beginPath();g.arc(sp.cx,sp.cy,5,0,6.28);g.fill();
   }
   if(fx&&fx.hist){ // comet trails behind every marble
     for(const i of order){fx.hist.forEach((Hk,k)=>{const q=Hk[i];if(q.y<top-30||q.y>bot+30)return;g.globalAlpha=.34*(1-(k+1)/(fx.hist.length+1));g.fillStyle=marbles[i].color;g.beginPath();g.arc(q.x,q.y,RAD*(1-.06*(k+1)),0,6.28);g.fill()});g.globalAlpha=1}
   }
-  [...order].reverse().forEach(i=>{const p=P[i];if(p.y<top-30||p.y>bot+30)return;marbleDot(p.x,p.y,RAD,marbles[i].color,i===leader)});
+  [...order].reverse().forEach(i=>{const p=P[i];if(p.y<top-30||p.y>bot+30)return;if(fx&&fx.pro)marblePro(p.x,p.y,RAD,marbles[i].color,i===leader,tSim);else marbleDot(p.x,p.y,RAD,marbles[i].color,i===leader)});
+  if(fx&&fx.flash){const L2=P[leader],a=fx.flash.age,k=1-a/.7;g.strokeStyle=rgbaHex(marbles[leader].color,k);g.lineWidth=5*k+1;g.beginPath();g.arc(L2.x,L2.y,RAD+8+a*190,0,6.2832);g.stroke();g.globalCompositeOperation="lighter";g.fillStyle=rgbaHex(marbles[leader].color,.22*k);g.beginPath();g.arc(L2.x,L2.y,RAD*2.4+a*70,0,6.2832);g.fill();g.globalCompositeOperation="source-over"}
   // leader tag
-  const lp=P[leader];g.font="bold 14px system-ui";g.textAlign="center";g.fillStyle="#fff";g.fillText(marbles[leader].name,lp.x,lp.y-RAD-8);g.textAlign="left";
+  const lp=P[leader];
+  if(fx&&fx.pro){g.font="bold 14px system-ui";const nm=marbles[leader].name,w2=g.measureText(nm).width+22;pill(lp.x-w2/2,lp.y-RAD-34,w2,22,rgbaHex(marbles[leader].color,.92));g.textAlign="center";g.fillStyle="#fff";g.fillText(nm,lp.x,lp.y-RAD-18);crown(lp.x,lp.y-RAD-38,9);g.textAlign="left"}
+  else{g.font="bold 14px system-ui";g.textAlign="center";g.fillStyle="#fff";g.fillText(marbles[leader].name,lp.x,lp.y-RAD-8);g.textAlign="left"}
   g.restore();
 }
 function drawHUD(P,order,leader,course,overlayWin){
@@ -649,6 +663,135 @@ function drawCaption(t){
   g.textAlign="center";g.font="bold 46px system-ui";g.lineWidth=8;g.strokeStyle="#000";g.lineJoin="round";
   const y=H*.5+40;g.strokeText(sl.text,W/2,y);g.fillStyle="#fff";g.fillText(sl.text,W/2,y);g.textAlign="left";
 }
+// ================= PRO VISUALS (used by the Render; the live Preview stays light) =================
+const hash01=(i,k)=>{let x=Math.sin(i*127.1+k*311.7)*43758.5453;return x-Math.floor(x)};
+function hexRgb(c){const n=parseInt(c.slice(1),16);return[(n>>16)&255,(n>>8)&255,n&255]}
+function mixHex(c,target,a){const [r,g,b]=hexRgb(c);return `rgb(${Math.round(r+(target-r)*a)},${Math.round(g+(target-g)*a)},${Math.round(b+(target-b)*a)})`}
+function rgbaHex(c,a){const [r,g,b]=hexRgb(c);return `rgba(${r},${g},${b},${a})`}
+const spriteCache=new Map();
+function marbleSprite(col){ // a glass marble: body, rim light, reflection band, specular dot
+  let cn=spriteCache.get(col);if(cn)return cn;
+  const S=128,r=S/2-6,c=S/2;cn=document.createElement("canvas");cn.width=cn.height=S;const x=cn.getContext("2d");
+  let gr=x.createRadialGradient(c-r*.35,c-r*.4,r*.08,c,c,r);gr.addColorStop(0,mixHex(col,255,.7));gr.addColorStop(.42,col);gr.addColorStop(1,mixHex(col,0,.62));
+  x.fillStyle=gr;x.beginPath();x.arc(c,c,r,0,6.2832);x.fill();
+  x.save();x.beginPath();x.arc(c,c,r,0,6.2832);x.clip();
+  gr=x.createRadialGradient(c+r*.55,c+r*.6,r*.05,c+r*.55,c+r*.6,r*.95);gr.addColorStop(0,rgbaHex(col,.0));gr.addColorStop(0,mixHex(col,255,.45).replace("rgb","rgba").replace(")",",.55)"));gr.addColorStop(1,"rgba(0,0,0,0)");
+  x.fillStyle=gr;x.fillRect(0,0,S,S);
+  x.strokeStyle="rgba(255,255,255,.32)";x.lineWidth=r*.15;x.lineCap="round";x.beginPath();x.arc(c-r*.1,c-r*.1,r*.7,Math.PI*1.06,Math.PI*1.55);x.stroke();
+  x.restore();
+  x.fillStyle="rgba(255,255,255,.96)";x.beginPath();x.ellipse(c-r*.38,c-r*.43,r*.17,r*.1,-.7,0,6.2832);x.fill();
+  x.strokeStyle=mixHex(col,0,.75).replace("rgb","rgba").replace(")",",.85)");x.lineWidth=2.4;x.beginPath();x.arc(c,c,r,0,6.2832);x.stroke();
+  spriteCache.set(col,cn);return cn;
+}
+function marblePro(x,y,r,col,isLead,tSim){
+  g.fillStyle="rgba(0,0,0,.34)";g.beginPath();g.ellipse(x+r*.28,y+r*.5,r*1.02,r*.78,0,0,6.2832);g.fill(); // soft shadow
+  if(isLead){const k=1+.12*Math.sin(tSim*9);g.globalCompositeOperation="lighter";const gr=g.createRadialGradient(x,y,r*.6,x,y,r*2.6*k);gr.addColorStop(0,rgbaHex(col,.5));gr.addColorStop(1,rgbaHex(col,0));g.fillStyle=gr;g.beginPath();g.arc(x,y,r*2.6*k,0,6.2832);g.fill();g.globalCompositeOperation="source-over"}
+  const d=2*r*(128/116);g.drawImage(marbleSprite(col),x-d/2,y-d/2,d,d);
+}
+function pill(x,y,w,h,fill,stroke){g.beginPath();const r=h/2;g.moveTo(x+r,y);g.arcTo(x+w,y,x+w,y+h,r);g.arcTo(x+w,y+h,x,y+h,r);g.arcTo(x,y+h,x,y,r);g.arcTo(x,y,x+w,y,r);g.closePath();g.fillStyle=fill;g.fill();if(stroke){g.strokeStyle=stroke;g.lineWidth=2;g.stroke()}}
+function roundCard(x,y,w,h,r,fill,stroke){g.beginPath();g.moveTo(x+r,y);g.arcTo(x+w,y,x+w,y+h,r);g.arcTo(x+w,y+h,x,y+h,r);g.arcTo(x,y+h,x,y,r);g.arcTo(x,y,x+w,y,r);g.closePath();g.fillStyle=fill;g.fill();if(stroke){g.strokeStyle=stroke;g.lineWidth=3;g.stroke()}}
+function crown(x,y,s,col){g.fillStyle="#ffd34d";g.strokeStyle="rgba(120,70,0,.8)";g.lineWidth=1.5;g.beginPath();g.moveTo(x-s,y);g.lineTo(x-s*.85,y-s*.9);g.lineTo(x-s*.4,y-s*.4);g.lineTo(x,y-s*1.1);g.lineTo(x+s*.4,y-s*.4);g.lineTo(x+s*.85,y-s*.9);g.lineTo(x+s,y);g.closePath();g.fill();g.stroke()}
+// parallax background: soft colour clouds + themed ambient particles per map
+function proBackground(course,cam,t,pulse){
+  const pal=course.pal,key=course.mapKey||"neon";
+  g.save();g.globalCompositeOperation="lighter";
+  for(let i=0;i<4;i++){
+    const x=W*(.1+.8*hash01(i,1)),y=(((hash01(i,2)*H*2.2-cam*.12)%(H*1.7))+H*1.7)%(H*1.7)-H*.35,rad=240+hash01(i,3)*160;
+    const gr=g.createRadialGradient(x,y,0,x,y,rad);gr.addColorStop(0,`hsla(${(pal.hb+i*47)%360},75%,48%,${.13+pulse*.05})`);gr.addColorStop(1,"hsla(0,0%,0%,0)");
+    g.fillStyle=gr;g.fillRect(0,0,W,H);
+  }
+  g.restore();
+  const N=64;
+  for(let i=0;i<N;i++){
+    const d=.25+.75*hash01(i,4),x0=hash01(i,5)*W,sp=(key==="spinner"?-26:key==="slide"?22:key==="funnel"?-18:key==="pachinko"?8:5)*d;
+    const y=(((hash01(i,6)*H*1.5-cam*d*.45+t*sp)%(H*1.2))+H*1.2)%(H*1.2)-H*.1,x=x0+Math.sin(t*.7*d+i)*10*d;
+    const tw=.55+.45*Math.sin(t*2.2+i*3.1),size=(.8+hash01(i,7)*2)*d*(key==="funnel"?2:1);
+    if(key==="funnel"){g.strokeStyle=`hsla(${pal.hb},80%,75%,${.28*d})`;g.lineWidth=1;g.beginPath();g.arc(x,y,size*2.4,0,6.2832);g.stroke()}
+    else{g.fillStyle=key==="spinner"?`hsla(${20+hash01(i,8)*30},100%,60%,${.55*d*tw})`:key==="pachinko"?`hsla(${hash01(i,8)>.5?330:50},100%,75%,${.7*d*tw})`:`rgba(255,255,255,${.55*d*tw})`;g.beginPath();g.arc(x,y,size,0,6.2832);g.fill()}
+  }
+}
+function drawSegPro(s,hue,pulse){
+  const col=`hsl(${hue},85%,62%)`;
+  if(s.k==="peg"){
+    g.globalCompositeOperation="lighter";const gr=g.createRadialGradient(s.x1,s.y1,0,s.x1,s.y1,s.r*3.4);gr.addColorStop(0,`hsla(${hue},90%,60%,${.45+pulse*.35})`);gr.addColorStop(1,`hsla(${hue},90%,60%,0)`);g.fillStyle=gr;g.beginPath();g.arc(s.x1,s.y1,s.r*3.4,0,6.2832);g.fill();g.globalCompositeOperation="source-over";
+    g.fillStyle=`hsl(${hue},80%,${58+pulse*18}%)`;g.beginPath();g.arc(s.x1,s.y1,s.r+pulse*2,0,6.2832);g.fill();
+    g.fillStyle="rgba(255,255,255,.8)";g.beginPath();g.arc(s.x1-s.r*.3,s.y1-s.r*.3,s.r*.32,0,6.2832);g.fill();
+  }else if(s.k==="bump"){
+    const h2=(hue+120)%360;
+    g.strokeStyle=`hsla(${h2},90%,70%,${pulse*.85})`;g.lineWidth=3;g.beginPath();g.arc(s.x1,s.y1,s.r+6+(1-pulse)*26,0,6.2832);g.stroke(); // ring that pulses on the beat
+    g.globalCompositeOperation="lighter";const gr=g.createRadialGradient(s.x1,s.y1,s.r*.5,s.x1,s.y1,s.r*2.2);gr.addColorStop(0,`hsla(${h2},90%,55%,.5)`);gr.addColorStop(1,`hsla(${h2},90%,55%,0)`);g.fillStyle=gr;g.beginPath();g.arc(s.x1,s.y1,s.r*2.2,0,6.2832);g.fill();g.globalCompositeOperation="source-over";
+    const bg=g.createRadialGradient(s.x1-s.r*.3,s.y1-s.r*.35,s.r*.1,s.x1,s.y1,s.r);bg.addColorStop(0,`hsl(${h2},90%,${78+pulse*10}%)`);bg.addColorStop(.6,`hsl(${h2},85%,${48+pulse*14}%)`);bg.addColorStop(1,`hsl(${h2},85%,28%)`);
+    g.fillStyle=bg;g.beginPath();g.arc(s.x1,s.y1,s.r+pulse*3,0,6.2832);g.fill();
+    g.fillStyle="rgba(255,255,255,.55)";g.beginPath();g.ellipse(s.x1-s.r*.32,s.y1-s.r*.38,s.r*.28,s.r*.16,-.7,0,6.2832);g.fill();
+  }else{ // ramp: a glowing neon tube
+    g.lineCap="round";
+    g.strokeStyle=`hsla(${hue},90%,60%,.2)`;g.lineWidth=s.r*5.2;g.beginPath();g.moveTo(s.x1,s.y1);g.lineTo(s.x2,s.y2);g.stroke();
+    g.strokeStyle=col;g.lineWidth=s.r*2;g.beginPath();g.moveTo(s.x1,s.y1);g.lineTo(s.x2,s.y2);g.stroke();
+    g.strokeStyle=`rgba(255,255,255,${.55+pulse*.3})`;g.lineWidth=s.r*.55;g.beginPath();g.moveTo(s.x1,s.y1-s.r*.35);g.lineTo(s.x2,s.y2-s.r*.35);g.stroke();
+  }
+}
+function confetti(t0,t,leaderCol){
+  const a0=t-t0;if(a0<0||a0>4.5)return;
+  const cols=[...marbles.map(m=>m.color),"#ffd34d","#ffffff"];
+  for(let i=0;i<110;i++){
+    const ang=-Math.PI/2+(hash01(i,11)-.5)*2.4,sp=260+hash01(i,12)*520,ph=hash01(i,13)*6.28,a=a0-hash01(i,14)*.18;if(a<0)continue;
+    const x=W/2+Math.cos(ang)*sp*a*.62+Math.sin(a*5+ph)*14,y=H*.62+Math.sin(ang)*sp*a+.5*620*a*a;
+    g.save();g.translate(x,y);g.rotate(ph+a*(4+hash01(i,15)*8));g.globalAlpha=Math.max(0,Math.min(1,(4.5-a0)/1.2));g.fillStyle=cols[i%cols.length];g.fillRect(-4,-6,8,12*(.4+.6*Math.abs(Math.sin(a*9+ph))));g.restore();
+  }
+  g.globalAlpha=1;
+}
+function hudPro(P,order,leader,course,t,pulse,winOn,winIdx){
+  const n=marbles.length,m=marbles[leader],col=m.color;
+  // top banner: who is singing
+  g.save();g.shadowColor="rgba(0,0,0,.45)";g.shadowBlur=18;pill(18,16,W-36,86,"rgba(12,12,24,.62)",rgbaHex(col,.55));g.restore();
+  g.fillStyle=col;g.beginPath();g.arc(62,59,26,0,6.2832);g.fill();g.fillStyle="rgba(0,0,0,.45)";g.beginPath();g.arc(62,59,26,Math.PI*.1,Math.PI*1.1);g.fill();
+  g.fillStyle="#fff";g.font="bold 28px system-ui";g.textAlign="center";g.fillText(m.name.slice(0,1).toUpperCase(),62,69);
+  g.textAlign="left";g.fillStyle="rgba(255,255,255,.6)";g.font="bold 12px system-ui";g.fillText("N O W   S I N G I N G",102,40);
+  g.save();g.shadowColor=col;g.shadowBlur=14;g.fillStyle="#fff";g.font="bold 34px system-ui";g.fillText(m.name,102,74);g.restore();
+  g.fillStyle="rgba(255,255,255,.55)";g.font="13px system-ui";g.fillText((m.clone?"Cloned voice":VOICES[m.preset]),102,94);
+  for(let i=0;i<6;i++){const hgt=6+pulse*22*(.5+.5*Math.sin(i*1.9))+Math.abs(Math.sin(t*9+i*1.7))*16;g.fillStyle=rgbaHex(col,.9);pill(W-46-i*12,59-hgt/2,6,hgt,rgbaHex(col,.9))}
+  // progress rail
+  g.fillStyle="rgba(255,255,255,.14)";pill(W-20,130,6,H-340,"rgba(255,255,255,.14)");
+  marbles.forEach((mm,i)=>{const u=Math.max(0,Math.min(1,P[i].y/course.finishY)),yy=130+u*(H-340);g.fillStyle=rgbaHex(mm.color,.35);g.beginPath();g.arc(W-17,yy,9,0,6.2832);g.fill();g.fillStyle=mm.color;g.beginPath();g.arc(W-17,yy,5,0,6.2832);g.fill()});
+  // leaderboard cards
+  g.font="bold 15px system-ui";
+  order.forEach((i,k)=>{const y=H-34-(n-k)*30,top=k===0;pill(14,y-18,168,26,top?rgbaHex(marbles[i].color,.35):"rgba(12,12,24,.55)",top?rgbaHex(marbles[i].color,.8):null);
+    g.fillStyle="rgba(255,255,255,.55)";g.textAlign="center";g.fillText(String(k+1),32,y);g.fillStyle=marbles[i].color;g.beginPath();g.arc(52,y-6,6,0,6.2832);g.fill();g.textAlign="left";g.fillStyle="#fff";g.fillText(marbles[i].name,66,y)});
+  g.textAlign="left";
+  if(winOn>=0){
+    const a=Math.min(1,(t-winOn)/.45),wc=marbles[winIdx].color;
+    g.fillStyle=`rgba(0,0,0,${.5*a})`;g.fillRect(0,0,W,H);
+    const cy=H*.42,sc=.85+.15*Math.min(1,a*1.4);g.save();g.translate(W/2,cy);g.scale(sc,sc);g.globalAlpha=a;
+    g.shadowColor=wc;g.shadowBlur=40;roundCard(-190,-112,380,224,34,"rgba(14,14,28,.9)",rgbaHex(wc,.9));g.shadowBlur=0;
+    g.textAlign="center";g.fillStyle="#ffd34d";g.font="bold 20px system-ui";g.fillText("W I N N E R",0,-62);
+    g.font="56px system-ui";g.fillText("🏆",0,-8);
+    g.save();g.shadowColor=wc;g.shadowBlur=26;g.fillStyle="#fff";g.font="bold 54px system-ui";g.fillText(marbles[winIdx].name,0,62);g.restore();
+    g.restore();g.globalAlpha=1;g.textAlign="left";
+  }
+}
+function captionPro(t,col){
+  if(!run||!run.slots)return;
+  let idx=-1;for(let i=0;i<run.slots.length;i++){if(run.slots[i].t0<=t)idx=i;else break}
+  if(idx<0)return;const sl=run.slots[idx],age=t-sl.t0;if(age>1.5)return;
+  const pop=age<.18?(()=>{const u=age/.18,c1=1.7;return 1+(c1+1)*Math.pow(u-1,3)+c1*Math.pow(u-1,2)})():1,y=H*.5+40;
+  g.textAlign="center";
+  const prev=run.slots[idx-1],next=run.slots[idx+1];
+  g.font="bold 26px system-ui";g.lineJoin="round";
+  if(prev){g.globalAlpha=Math.max(0,.4-age*.3);g.lineWidth=5;g.strokeStyle="#000";g.strokeText(prev.text,W/2,y-62);g.fillStyle="#fff";g.fillText(prev.text,W/2,y-62)}
+  if(next){g.globalAlpha=.35;g.lineWidth=5;g.strokeStyle="#000";g.strokeText(next.text,W/2,y+58);g.fillStyle="#fff";g.fillText(next.text,W/2,y+58)}
+  g.globalAlpha=1;g.save();g.translate(W/2,y);g.scale(Math.max(.2,pop),Math.max(.2,pop));
+  g.font="bold 54px system-ui";g.lineWidth=9;g.strokeStyle="#000";g.strokeText(sl.text,0,0);
+  g.save();g.shadowColor=col;g.shadowBlur=24;g.fillStyle="#fff";g.fillText(sl.text,0,0);g.restore();g.restore();g.textAlign="left";
+}
+function titleCard(t,text){
+  if(!text||t>2.6)return;const a=Math.min(1,t/.35)*Math.min(1,(2.6-t)/.5);if(a<=0)return;
+  g.save();g.globalAlpha=a;g.textAlign="center";const y=H*.3+(1-Math.min(1,t/.5))*18;
+  g.fillStyle=`rgba(0,0,0,${.35*a})`;g.fillRect(0,y-70,W,120);
+  g.font="bold 46px system-ui";g.lineWidth=8;g.lineJoin="round";g.strokeStyle="rgba(0,0,0,.8)";g.strokeText(text.toUpperCase(),W/2,y);
+  const gr=g.createLinearGradient(0,y-40,0,y+10);gr.addColorStop(0,"#fff");gr.addColorStop(1,"#ffd0e8");g.fillStyle=gr;g.fillText(text.toUpperCase(),W/2,y);
+  g.restore();
+}
+
 function frame(t,fx){
   const tl=run.tl;g.setTransform(SC,0,0,SC,0,0);bgFill(tl.course?tl.course.pal:null);
   if(tl.kind==="path"){drawPath(tl,t);drawCaption(t);if(fx&&fx.vignette)vignette();return}
@@ -662,10 +805,22 @@ function frame(t,fx){
   const order=[...Array(n).keys()].sort((a,b)=>sc(b)-sc(a));
   const leader=tl.leadA[f];
   let pulse=0;for(const b of run.beatsRel){if(b<=t)pulse=Math.exp(-(t-b)*9);else break}
-  const efx=fx?{hist:fx.trail?[1,2,3,4,5,6,7,8].map(k=>at(Math.max(0,sf0-k*2))):null,shake:fx.shake?[Math.sin(t*93)*pulse*3,Math.cos(t*77)*pulse*3]:null}:null;
+  const efx=fx?{hist:fx.trail?[1,2,3,4,5,6,7,8].map(k=>at(Math.max(0,sf0-k*2))):null,shake:fx.shake?[Math.sin(t*93)*pulse*3,Math.cos(t*77)*pulse*3]:null,pro:fx.pro}:null;
+  if(fx&&fx.pro){
+    proBackground(tl.course,cam,t,pulse);
+    let tc=-1;for(let k=0;k<45;k++){const ff=f-k;if(ff>=1&&tl.leadA[ff]!==tl.leadA[ff-1]){tc=ff/FPS;break}}
+    if(tc>=0&&t-tc<.7&&t>.3)efx.flash={age:t-tc};
+    const wz=Math.max(0,t-tl.winTime),ez=1-Math.pow(1-Math.min(1,wz/1.3),3);
+    efx.zoom=(1+pulse*.012)*(1+.1*ez);
+  }
   drawRaceScene(tl.course,P,cam,pulse,leader,order,ts,-1,efx);
-  drawHUD(P,order,leader,tl.course,t>=tl.winTime?sim.winner:-1);
-  drawCaption(t);
+  if(fx&&fx.pro){
+    hudPro(P,order,leader,tl.course,t,pulse,t>=tl.winTime?tl.winTime:-1,sim.winner);
+    if(t<tl.winTime)captionPro(t,marbles[leader].color);confetti(tl.winTime,t);titleCard(t,fx.title);
+  }else{
+    drawHUD(P,order,leader,tl.course,t>=tl.winTime?sim.winner:-1);
+    drawCaption(t);
+  }
   if(fx&&fx.vignette)vignette();
 }
 function vignette(){
@@ -1446,18 +1601,43 @@ function makeIR(ctx,sec){
   for(let c=0;c<2;c++){const d=ir.getChannelData(c);let lp=0;for(let i=0;i<n;i++){lp+=.35*((Math.random()*2-1)-lp);d[i]=lp*Math.pow(1-i/n,2.6)*(i<sr*.004?i/(sr*.004):1)}}
   return ir;
 }
-// voices -> voice bus (EQ, presence, gentle compression, a little room) -> master (glue compressor, makeup) -> outputs.
-// The backing track goes straight to the master. Voice gains switch to the leading marble at every overtake.
+// Synthesised sound effects (no samples needed): everything is generated here
+function makeSfx(ctx){
+  const sr=ctx.sampleRate,mk=(sec,fn)=>{const n=Math.floor(sr*sec),b=ctx.createBuffer(1,n,sr),d=b.getChannelData(0);for(let i=0;i<n;i++)d[i]=fn(i/sr,i/n);return b};
+  const noise=()=>Math.random()*2-1;
+  let lp=0;
+  return{
+    peg:mk(.05,(t,u)=>(Math.sin(2*Math.PI*1650*t)*.7+Math.sin(2*Math.PI*3300*t)*.25)*Math.exp(-t*90)),
+    bump:mk(.2,(t,u)=>Math.sin(2*Math.PI*(210+520*Math.min(1,t*14))*t)*Math.exp(-t*20)*.9+Math.sin(2*Math.PI*(420+1040*Math.min(1,t*14))*t)*Math.exp(-t*28)*.3),
+    ramp:mk(.07,(t,u)=>{lp+=.2*(noise()-lp);return (Math.sin(2*Math.PI*105*t)*.8+lp*.5)*Math.exp(-t*55)}),
+    click:mk(.03,(t,u)=>noise()*Math.exp(-t*160)*.5),
+    whoosh:mk(.55,(t,u)=>{lp+=(.05+.5*u)*(noise()-lp);return lp*Math.sin(Math.PI*u)*1.6}),
+    stinger:mk(2.2,(t,u)=>{let y=0;[523.25,659.25,783.99,1046.5].forEach((f,k)=>{const st=k*.07;if(t>st)y+=Math.sin(2*Math.PI*f*(t-st))*Math.exp(-(t-st)*2.4)*.22});return y}),
+    cheer:mk(2.6,(t,u)=>{let y=noise()*.18*(.5+.5*Math.sin(t*37)*Math.sin(t*23));lp+=.45*(y-lp);return (y-lp*.6)*Math.min(1,t*6)*Math.exp(-Math.max(0,t-1.2)*1.7)})
+  };
+}
+// voices -> voice bus (warmth, EQ, presence, light compression, stereo doubling, tempo-synced echo, room)
+// + sound effects -> master (glue compressor, makeup) -> outputs. The backing track goes straight to the master.
+// Voice gains switch to the leading marble at every overtake.
 function wireAudio(ctx,outs,bufs,vc,tl,t0,engine,wet){
   const master=ctx.createGain(),comp=ctx.createDynamicsCompressor(),makeup=ctx.createGain();
   comp.threshold.value=-20;comp.knee.value=12;comp.ratio.value=4;comp.attack.value=.004;comp.release.value=.18;makeup.gain.value=1.8;
   master.connect(comp);comp.connect(makeup);for(const o of outs)makeup.connect(o);
-  const vbus=ctx.createGain(),hp=ctx.createBiquadFilter(),pres=ctx.createBiquadFilter(),air=ctx.createBiquadFilter(),vcomp=ctx.createDynamicsCompressor();
+  const vbus=ctx.createGain(),hp=ctx.createBiquadFilter(),warm=ctx.createWaveShaper(),pres=ctx.createBiquadFilter(),air=ctx.createBiquadFilter(),vcomp=ctx.createDynamicsCompressor();
   hp.type="highpass";hp.frequency.value=80;pres.type="peaking";pres.frequency.value=3200;pres.Q.value=.8;pres.gain.value=2.5;
   air.type="highshelf";air.frequency.value=9000;air.gain.value=1.5;
+  const curve=new Float32Array(1025);for(let i=0;i<1025;i++){const x=i/512-1;curve[i]=Math.tanh(x*1.5)/Math.tanh(1.5)}warm.curve=curve;warm.oversample="2x"; // a little harmonic warmth
   vcomp.threshold.value=-24;vcomp.knee.value=18;vcomp.ratio.value=2.5;vcomp.attack.value=.01;vcomp.release.value=.12;
-  vbus.connect(hp);hp.connect(pres);pres.connect(air);air.connect(vcomp);vcomp.connect(master);
-  if(wet>0){const conv=ctx.createConvolver(),wg=ctx.createGain();conv.buffer=makeIR(ctx,1.3);wg.gain.value=wet;air.connect(conv);conv.connect(wg);wg.connect(master)}
+  vbus.connect(hp);hp.connect(warm);warm.connect(pres);pres.connect(air);air.connect(vcomp);vcomp.connect(master);
+  if(wet>0){
+    const conv=ctx.createConvolver(),wg=ctx.createGain();conv.buffer=makeIR(ctx,1.3);wg.gain.value=wet;air.connect(conv);conv.connect(wg);wg.connect(master);
+    // stereo doubling: two slightly delayed copies panned apart (fuller, wider voice)
+    [[.013,-.75],[.021,.75]].forEach(([d,p])=>{const dl=ctx.createDelay(.1),pn=ctx.createStereoPanner(),g=ctx.createGain();dl.delayTime.value=d;pn.pan.value=p;g.gain.value=.2;air.connect(dl);dl.connect(pn);pn.connect(g);g.connect(master)});
+    // tempo-synced echo (an eighth note) with a darker repeat
+    const bp=Math.max(.3,Math.min(1.2,vc.beatPeriod||.5)),ed=ctx.createDelay(2),ef=ctx.createGain(),elp=ctx.createBiquadFilter(),eg=ctx.createGain();
+    ed.delayTime.value=bp/2;ef.gain.value=.3;elp.type="lowpass";elp.frequency.value=3000;eg.gain.value=.1;
+    air.connect(ed);ed.connect(elp);elp.connect(ef);ef.connect(ed);elp.connect(eg);eg.connect(master);
+  }
   const gains=[],srcs=[];
   bufs.forEach(b=>{const src=ctx.createBufferSource();src.buffer=b;const gn=ctx.createGain();gn.gain.value=0;src.connect(gn);gn.connect(vbus);gains.push(gn);srcs.push(src)});
   if(vc.backing){
@@ -1470,25 +1650,70 @@ function wireAudio(ctx,outs,bufs,vc,tl,t0,engine,wet){
     if(v!==cur){gains.forEach((gn,i)=>gn.gain.setTargetAtTime(i===v?1:0,t0+t,.012));cur=v}
   }
   srcs.forEach(src=>src.start(t0,0));
+  // sound effects from the real collisions in the physics, plus a whoosh on every overtake and a finish stinger
+  if($("sfx").checked&&tl.kind==="race"){
+    const fx=makeSfx(ctx),bus=ctx.createGain();bus.gain.value=.55;bus.connect(master);
+    const play=(buf,t,gain,pan,rate)=>{
+      if(t<0||t>vc.len)return;const s2=ctx.createBufferSource(),g=ctx.createGain(),pn=ctx.createStereoPanner();
+      s2.buffer=buf;s2.playbackRate.value=rate||1;g.gain.value=gain;pn.pan.value=Math.max(-1,Math.min(1,pan||0));s2.connect(g);g.connect(pn);pn.connect(bus);s2.start(t0+t);
+    };
+    const evs=(tl.sim.events||[]).slice().sort((a,b)=>a.f-b.f),bin=new Map();
+    for(const e of evs){const key=Math.floor(e.f/5)+"|"+e.k;const o=bin.get(key);if(!o||e.v>o.v)bin.set(key,e)} // at most one of each kind per ~80 ms
+    let n=0;
+    for(const e of [...bin.values()].sort((a,b)=>b.v-a.v).slice(0,Math.ceil(vc.len*14))){ // loudest ~14 per second at most
+      const t=e.f/(FPS*tl.factor),gain=Math.min(.34,.05+e.v/1500),pan=(e.x/W-.5)*1.5,r=.85+((n++*7919)%100)/100*.5;
+      play(e.k===0?fx.peg:e.k===1?fx.bump:e.k===2?fx.ramp:fx.click,t,gain,pan,r);
+    }
+    let lastW=-9;for(let f=1;f<=tl.F;f++){if(tl.leadA[f]!==tl.leadA[f-1]){const t=f/FPS;if(t-lastW>.9){play(fx.whoosh,Math.max(0,t-.18),.5,0,1);lastW=t}}}
+    if(tl.winTime&&tl.winTime<vc.len-.2){play(fx.stinger,tl.winTime,.5,0,1);play(fx.cheer,tl.winTime+.1,.55,0,1)}
+  }
   return srcs;
 }
 
 // ================= RENDER: a finished HD video, drawn frame by frame (not recorded live) =================
-// final loudness: bring the mix to about -14 dBFS RMS, soft-limit the peaks, fade the ends
+// ---- mastering: ITU BS.1770 K-weighted loudness (LUFS) + a lookahead limiter, like streaming platforms expect ----
+function kWeight(x){
+  const f=(x,b,a)=>{const y=new Float32Array(x.length);let x1=0,x2=0,y1=0,y2=0;for(let i=0;i<x.length;i++){const v=b[0]*x[i]+b[1]*x1+b[2]*x2-a[1]*y1-a[2]*y2;x2=x1;x1=x[i];y2=y1;y1=v;y[i]=v}return y};
+  return f(f(x,[1.53512485958697,-2.69169618940638,1.19839281085285],[1,-1.69065929318241,.73248077421585]),[1,-2,1],[1,-1.99004745483398,.99007225036621]); // 48 kHz coefficients
+}
+function lufsOf(L,R){
+  const kl=kWeight(L),kr=kWeight(R),B=19200,H2=4800,z=[];
+  for(let i=0;i+B<=kl.length;i+=H2){let a=0,b=0;for(let j=0;j<B;j++){a+=kl[i+j]*kl[i+j];b+=kr[i+j]*kr[i+j]}z.push(a/B+b/B)}
+  if(!z.length)return-70;
+  const l=v=>-.691+10*Math.log10(v+1e-12),g1=z.filter(v=>l(v)>-70);if(!g1.length)return-70;
+  const thr=l(g1.reduce((p,c)=>p+c,0)/g1.length)-10,g2=g1.filter(v=>l(v)>thr);
+  return l(g2.reduce((p,c)=>p+c,0)/Math.max(1,g2.length));
+}
+function limitPeaks(L,R,ceil,sr){
+  const n=L.length,look=Math.floor(sr*.003),rel=1/(sr*.09),r=new Float32Array(n);
+  for(let i=0;i<n;i++){const pk=Math.max(Math.abs(L[i]),Math.abs(R[i]));r[i]=pk>ceil?ceil/pk:1}
+  // sliding minimum over the lookahead window, then smoothed so gain changes are click-free
+  const m=new Float32Array(n),dq=[];let h=0;
+  for(let i=n-1;i>=0;i--){while(dq.length>h&&r[dq[dq.length-1]]>=r[i])dq.pop();dq.push(i);while(dq[h]>i+look)h++;m[i]=r[dq[h]]}
+  const sm=new Float32Array(n);let acc=0;for(let i=0;i<look&&i<n;i++)acc+=m[i];
+  for(let i=0;i<n;i++){const add=i+look<n?m[i+look]:1;acc+=add-(i>=look?m[i-look]:1);sm[i]=Math.min(m[i],acc/look)}
+  let g=1;
+  for(let i=0;i<n;i++){const want=Math.min(sm[i],m[i]);g=want<g?want:g+(1-g)*rel;if(g>want)g=want;L[i]*=g;R[i]*=g}
+}
 function masterAudio(buf){
-  const L=buf.getChannelData(0).slice(),R=(buf.numberOfChannels>1?buf.getChannelData(1):buf.getChannelData(0)).slice(),n=L.length;
-  let e=0,c=0;const blk=2400;
-  for(let i=0;i+blk<=n;i+=blk){let b=0;for(let j=0;j<blk;j++)b+=L[i+j]*L[i+j]+R[i+j]*R[i+j];b/=2*blk;if(b>1e-5){e+=b;c++}}
-  const rms=Math.sqrt(e/Math.max(1,c))||.05,gain=Math.max(.4,Math.min(5,.2/rms));
-  const lim=x=>{const a=Math.abs(x);return a<.6?x:Math.sign(x)*(.6+.38*Math.tanh((a-.6)/.38))};
-  const fi=Math.floor(buf.sampleRate*.005),fo=Math.floor(buf.sampleRate*.25);
-  for(let i=0;i<n;i++){const f=(i<fi?i/fi:1)*(n-i<fo?(n-i)/fo:1);L[i]=lim(L[i]*gain)*f;R[i]=lim(R[i]*gain)*f}
-  return{L,R,gain,rms};
+  const sr=buf.sampleRate,L0=buf.getChannelData(0),R0=buf.numberOfChannels>1?buf.getChannelData(1):buf.getChannelData(0),n=L0.length;
+  const TARGET=-14,CEIL=Math.pow(10,-1.3/20);let gain=1,L,R,lu=-70;
+  const pre=lufsOf(L0,R0);
+  for(let it=0;it<3;it++){ // set the gain, limit, re-measure, correct
+    if(it===0)gain=Math.max(.25,Math.min(8,Math.pow(10,(TARGET-pre)/20)));
+    L=new Float32Array(n);R=new Float32Array(n);for(let i=0;i<n;i++){L[i]=L0[i]*gain;R[i]=R0[i]*gain}
+    limitPeaks(L,R,CEIL,sr);lu=lufsOf(L,R);
+    if(Math.abs(lu-TARGET)<.3)break;gain=Math.max(.25,Math.min(10,gain*Math.pow(10,(TARGET-lu)/20)));
+  }
+  const fi=Math.floor(sr*.005),fo=Math.floor(sr*.3);
+  for(let i=0;i<n;i++){const f=(i<fi?i/fi:1)*(n-i<fo?(n-i)/fo:1);L[i]*=f;R[i]*=f}
+  let pk=0;for(let i=0;i<n;i+=2)pk=Math.max(pk,Math.abs(L[i]),Math.abs(R[i]));
+  return{L,R,lufs:lu,preLufs:pre,gain,peakDb:20*Math.log10(pk||1e-6)};
 }
 const RENDER_PRESETS={
-  draft:{w:540,h:960,fps:30,sub:1,bitrate:3e6,fx:{trail:true,vignette:true,shake:false}},
-  std:{w:1080,h:1920,fps:30,sub:1,bitrate:9e6,fx:{trail:true,vignette:true,shake:true}},
-  hi:{w:1080,h:1920,fps:60,sub:3,bitrate:14e6,fx:{trail:true,vignette:true,shake:true}}
+  draft:{w:540,h:960,fps:30,sub:1,bitrate:3e6,fx:{trail:true,vignette:true,shake:false,pro:true}},
+  std:{w:1080,h:1920,fps:30,sub:1,bitrate:10e6,fx:{trail:true,vignette:true,shake:true,pro:true}},
+  hi:{w:1080,h:1920,fps:60,sub:4,bitrate:16e6,fx:{trail:true,vignette:true,shake:true,pro:true}}
 };
 function restoreCanvas(){cv.width=720;cv.height=1280;SC=720/540}
 async function renderHD(){
@@ -1513,14 +1738,15 @@ async function renderHD(){
   });
 }
 async function renderVideoFile(prep,quality,tStart){
-  const {tl,bufs,vc,len,beats,engine}=prep,P=RENDER_PRESETS[quality]||RENDER_PRESETS.std,SRATE=48000;
+  const {tl,bufs,vc,len,beats,engine}=prep,P0=RENDER_PRESETS[quality]||RENDER_PRESETS.std,SRATE=48000;
+  const P={...P0,fx:{...P0.fx,title:$("vtitle").value.trim()}};
   const fmt=t=>{t=Math.max(0,Math.round(t));return Math.floor(t/60)+":"+String(t%60).padStart(2,"0")};
   // ---- 1. audio: render the whole mix offline, master it ----
   setStatus("Render: mixing and mastering the audio…");await sleep();
   const oac=new OfflineAudioContext(2,Math.ceil(len*SRATE),SRATE);
   wireAudio(oac,[oac.destination],bufs,vc,tl,0,engine,.14);
   const mix=masterAudio(await oac.startRendering());
-  logLine(`Audio mastered: gain x${mix.gain.toFixed(2)} (RMS was ${mix.rms.toFixed(3)})`);
+  logLine(`Audio mastered: ${mix.preLufs.toFixed(1)} → ${mix.lufs.toFixed(1)} LUFS, peak ${mix.peakDb.toFixed(1)} dBFS`);
   // ---- 2. pick the best codecs this browser can encode ----
   const base={width:P.w,height:P.h,bitrate:P.bitrate,framerate:P.fps};
   let vsel=null;
@@ -1557,6 +1783,9 @@ async function renderVideoFile(prep,quality,tStart){
   run={tl,beatsRel:beats,slots:vc.slots,need:vc.need,rec:null,srcs:[]};
   const acc=document.createElement("canvas");acc.width=P.w;acc.height=P.h;const ac=acc.getContext("2d");
   const sm=document.createElement("canvas");sm.width=Math.floor(P.w/4);sm.height=Math.floor(P.h/4);const smc=sm.getContext("2d");
+  const gcv=document.createElement("canvas");gcv.width=P.w;gcv.height=P.h;const gc=gcv.getContext("2d");
+  const nz=document.createElement("canvas");nz.width=nz.height=256;{const x=nz.getContext("2d"),im=x.createImageData(256,256);for(let k=0;k<im.data.length;k+=4){const v=Math.random()*255;im.data[k]=im.data[k+1]=im.data[k+2]=v;im.data[k+3]=255}x.putImageData(im,0,0)}
+  const grain=gc.createPattern(nz,"repeat");
   const total=Math.round(len*P.fps),tFrames=Date.now();
   $("renderBox").style.display="block";
   for(let i=0;i<total;i++){
@@ -1571,7 +1800,9 @@ async function renderVideoFile(prep,quality,tStart){
     ac.globalAlpha=1;
     smc.clearRect(0,0,sm.width,sm.height);smc.filter="blur(4px)";smc.drawImage(acc,0,0,sm.width,sm.height);smc.filter="none"; // glow
     ac.globalCompositeOperation="lighter";ac.globalAlpha=.36;ac.drawImage(sm,0,0,P.w,P.h);ac.globalCompositeOperation="source-over";ac.globalAlpha=1;
-    const vf=new VideoFrame(acc,{timestamp:Math.round(i*1e6/P.fps),duration:Math.round(1e6/P.fps)});
+    gc.filter="contrast(1.08) saturate(1.16) brightness(1.02)";gc.drawImage(acc,0,0);gc.filter="none"; // colour grade
+    gc.globalCompositeOperation="overlay";gc.globalAlpha=.07;gc.save();gc.translate((i*37)%256,(i*91)%256);gc.fillStyle=grain;gc.fillRect(-256,-256,P.w+512,P.h+512);gc.restore();gc.globalAlpha=1;gc.globalCompositeOperation="source-over"; // film grain
+    const vf=new VideoFrame(gcv,{timestamp:Math.round(i*1e6/P.fps),duration:Math.round(1e6/P.fps)});
     venc.encode(vf,{keyFrame:i%(P.fps*2)===0});vf.close();
     while(venc.encodeQueueSize>6)await new Promise(r=>setTimeout(r,4));
     if(i%4===3||i===total-1){
@@ -1728,6 +1959,7 @@ async function startRunInner(prepOnly){
   const bufs=[];
   try{for(let i=0;i<n;i++){if(engine!=="cover")setStatus(`Synthesizing voices… ${i+1}/${n} (${VOICES[marbles[i].preset]})`);await sleep();bufs.push(await voiceBuffer(marbles[i],s,len,vc,i))}}
   catch(e){if(e&&e.message==="cancelled")throw e;setStatus("Voice synthesis failed: "+e.message);$("go").disabled=false;return}
+  { const d=[];for(let i=1;i<beats.length;i++)d.push(beats[i]-beats[i-1]);d.sort((a,b)=>a-b);vc.beatPeriod=d.length?d[Math.floor(d.length/2)]:.5;vc.len=len }
   if(prepOnly)return{tl,bufs,vc,s,len,beats,engine,n};
   const dest=actx.createMediaStreamDestination();
   const t0=actx.currentTime+.3;

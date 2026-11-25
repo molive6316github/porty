@@ -68,3 +68,13 @@ Instrumental = mix - vocals, so the two always sum to the original. A real acape
   frames drawn at up to 1080x1920 / 60 fps with motion blur (3 sub-frames), glow, comet trails, camera shake and vignette,
   encoded with WebCodecs (H.264 + AAC if the browser can, else H.264 + Opus or VP9 + Opus) and muxed with
   [mp4-muxer](https://github.com/Vanilagy/mp4-muxer) / [webm-muxer](https://github.com/Vanilagy/webm-muxer) (MIT, bundled in `ai/render/muxers.js`).
+
+## Render: the "pro" look and sound
+- **Look:** glass marbles (sprite with rim light, reflection, specular, soft shadow), neon-tube ramps, glowing pegs, bumpers with
+  rings that pulse on the beat, parallax background with map-themed ambience (stars, embers, snow, bubbles, sparkles), comet trails,
+  crown + name tag on the leader, a flash ring on every overtake, glass HUD with animated equalizer, karaoke-style captions
+  (previous / current / next word, pop-in), optional title card, confetti + winner card + slow zoom at the finish,
+  bloom, colour grade, vignette and film grain. Up to 1080x1920 / 60 fps with 4-step motion blur.
+- **Sound:** voice bus (warmth, EQ, presence, light compression, stereo doubling, tempo-synced echo, room), synthesised sound effects
+  from the real physics collisions (pegs, bumpers, ramps, marble-on-marble), a whoosh on every overtake and a finish stinger + cheer,
+  then mastering to **-14 LUFS** (ITU BS.1770 K-weighted, gated) with a lookahead limiter (peaks stay under about -1.3 dBFS).
