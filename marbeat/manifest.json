@@ -1,20 +1,20 @@
 {
- "version": "723aa944c6d9",
- "built": "2026-11-25T18:47:56Z",
+ "version": "ebbb8e009832",
+ "built": "2026-11-25T20:24:40Z",
  "launcher": {
-  "version": "1",
+  "version": "2",
   "builds": {
    "windows-amd64": {
     "url": "download/Marbeat.exe",
-    "sha256": "8d38cecfb36b22799c441f3ed374a47d21e259ac7caaadebddcd2b49e7e91b6f"
+    "sha256": "7a304534b40e92b06613617e983bc389963a897a6ca309ae3adbf65c32b8e4e6"
    }
   }
  },
  "files": [
   {
    "path": "index.html",
-   "size": 136441,
-   "sha256": "c8b11b658cb882344408505c641ee416951f07f28d2d3788a9ecb292bda071ee",
+   "size": 136775,
+   "sha256": "f6c439534b3039f9a8b8fdfed8de6e6b8a23fddbe96a4a02bef087e0c2dd2428",
    "core": true
   },
   {

@@ -67,7 +67,8 @@ type App struct {
 	status Status
 
 	ln      net.Listener
-	locks   sync.Map // path -> *sync.Mutex
+	lastReq atomic.Int64 // unix nanoseconds of the most recent request: the page is alive while this keeps moving
+	locks   sync.Map     // path -> *sync.Mutex
 	bytesDL atomic.Int64
 	port    int
 	quit    chan struct{}
@@ -109,6 +110,12 @@ func dataDir() string {
 }
 
 func main() {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("PANIC: %v", r)
+			fatal(fmt.Sprintf("Marbeat crashed: %v\n\nDetails are in launcher.log in %s", r, dataDir()))
+		}
+	}()
 	base := envOr("MARBEAT_BASE", defaultBase)
 	if !strings.HasSuffix(base, "/") {
 		base += "/"
@@ -166,13 +173,38 @@ func main() {
 		log.Printf("no app window: %v", err)
 		fatal("Marbeat couldn't open a window.\n\nIt needs Microsoft Edge or Google Chrome.\n\n" + err.Error())
 	}
+	a.lastReq.Store(time.Now().UnixNano())
+	started := time.Now()
 	done := make(chan struct{})
-	go func() { cmd.Wait(); close(done) }()
-	select {
-	case <-done:
-		log.Printf("window closed, exiting")
-	case <-a.quit:
-		log.Printf("quit requested")
+	go func() {
+		err := cmd.Wait()
+		log.Printf("browser process %d ended after %s (%v); keeping the server up while the page is alive", cmd.Process.Pid, time.Since(started).Round(time.Millisecond), err)
+		close(done)
+	}()
+	// Edge/Chrome can start a process that hands the window to another process and exits straight away, so the process
+	// ending doesn't mean the window closed. The page pings us every few seconds; we quit only when the browser process
+	// is gone AND nothing has asked for anything for a while.
+	idleLimit := 120 * time.Second
+	if v, _ := strconv.Atoi(os.Getenv("MARBEAT_IDLE_SECS")); v > 0 {
+		idleLimit = time.Duration(v) * time.Second
+	}
+	tick := time.NewTicker(time.Second)
+	defer tick.Stop()
+	for {
+		select {
+		case <-a.quit:
+			log.Printf("quit requested")
+			return
+		case <-tick.C:
+			select {
+			case <-done:
+				if idle := time.Since(time.Unix(0, a.lastReq.Load())); idle > idleLimit {
+					log.Printf("window gone and idle for %s, exiting", idle.Round(time.Second))
+					return
+				}
+			default:
+			}
+		}
 	}
 }
 
@@ -228,6 +260,7 @@ var mimeTypes = map[string]string{
 }
 
 func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	a.lastReq.Store(time.Now().UnixNano())
 	// only answer requests addressed to localhost (blocks DNS-rebinding tricks)
 	h := r.Host
 	if !(strings.HasPrefix(h, "127.0.0.1:") || strings.HasPrefix(h, "localhost:") || h == "127.0.0.1" || h == "localhost") {
@@ -396,6 +429,12 @@ func (a *App) fetchManifest() (*Manifest, error) {
 }
 
 func (a *App) refresh() {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("PANIC in refresh: %v", r)
+			a.setStatus(func(s *Status) { s.Phase = "error"; s.Message = fmt.Sprintf("Internal error: %v", r) })
+		}
+	}()
 	a.loadLocalOnce()
 	a.setStatus(func(s *Status) { s.Phase = "checking"; s.Message = "Checking for updates…" })
 	m, err := a.fetchManifest()

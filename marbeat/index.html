@@ -2042,6 +2042,8 @@ logLine("Marbeat ready · base "+APP_BASE+" · cores "+(navigator.hardwareConcur
     if(s.contentVersion&&s.contentVersion!==v0){$("appReload").style.display="inline-block";$("appInfo").textContent+=" · update ready"}else $("appInfo").textContent+=" · you're up to date"};
   $("appOffline").onclick=async()=>{$("appOffline").disabled=true;await fetch("/__marbeat/prefetch");await new Promise(r=>setTimeout(r,300));await wait(x=>x.phase!=="prefetching");$("appOffline").disabled=false};
   $("appReload").onclick=()=>location.reload();
+  // heartbeat from a worker (not throttled when the window is minimized), so the app knows this window is still open
+  try{const hb=`setInterval(()=>fetch(${JSON.stringify(location.origin+"/__marbeat/ping")},{cache:"no-store"}).catch(()=>{}),8000)`;new Worker(URL.createObjectURL(new Blob([hb],{type:"text/javascript"})))}catch(e){}
   setInterval(async()=>{try{show(await st())}catch(e){}},5000);
 })();
 const mapSel=$("map");for(const k in MAPS)mapSel.add(new Option(MAPS[k].label,k));
