@@ -142,11 +142,12 @@ textarea{width:100%;min-height:84px;background:#0e0e17;border:1px solid var(--li
         <select id="engine"><option value="sing">Sing lyrics (synthesized voices)</option><option value="remix">Remix the song (pitch-shifted)</option><option value="cover">Cover: change the voice of a vocals-only file (best sync)</option></select>
         <div id="coverBox" style="display:none;margin-top:8px">
           <p class="note"><b>Cover mode</b> converts the real singing into each marble's voice, so the timing and melody are exactly the song's (no lyrics sync needed). Give each marble a voice sample with 🎤 below. Whoever leads sings.</p>
-          <label>Vocals-only file (acapella) of the same song <span style="color:#ff8aa8">required</span></label>
+          <label class="chk"><input type="checkbox" id="autoSep" checked> Make the acapella and instrumental from the song automatically (AI)</label>
+          <label>…or upload a real vocals-only file (acapella) of the same song (sounds better than the AI one)</label>
           <input type="file" id="vocalsFile" accept="audio/*">
           <label>Instrumental / backing track (optional)</label>
           <input type="file" id="instFile" accept="audio/*">
-          <p class="note" id="coverNote">Loads about 200 MB the first time. Converting takes roughly as long as the clip, or several times longer on a Chromebook.</p>
+          <p class="note" id="coverNote">Loads about 240 MB the first time. Converting takes roughly as long as the clip, or several times longer on a Chromebook.</p>
         </div>
         <label>Voice quality</label>
         <select id="voiceq"><option value="neural">Neural voices (natural, ~115 MB first load)</option><option value="robot">Robot voices (fast, tiny)</option></select>
@@ -872,7 +873,7 @@ async function voiceBuffer(m,s,len,vc,mi){
   let key,out,sr;
   if(vc.engine==="cover"){
     const sig=hashStr(JSON.stringify(vc.segsOf[mi]));
-    key=`${songId}|cover|${coverVocals.id}|${m.clone?m.clone.name:m.preset}|${s}|${len}|${sig}`;
+    key=`${songId}|cover|${vc.vocals.id}|${m.clone?m.clone.name:m.preset}|${s}|${len}|${sig}`;
     if(voiceCache.has(key))return voiceCache.get(key);
     out=await coverTrack(m,mi,vc,len);sr=16000;
   }else if(vc.engine==="sing"&&m.clone&&!vc.noClone){
@@ -1123,6 +1124,49 @@ async function cloneTrack(m,mi,vc,len){
   return out;
 }
 
+// ================= VOCAL SEPARATION (Spleeter, local) =================
+let sepW=null,sepReadyP=null,sepHandler=null,sepBusy=Promise.resolve();
+const sepCache=new Map();
+function getSep(){
+  if(sepReadyP)return sepReadyP;
+  sepReadyP=new Promise((resolve,reject)=>{
+    const w=new Worker(APP_BASE+"ai/sep/worker.js");sepW=w;
+    w.onerror=e=>{sepReadyP=null;reject(new Error("could not start the vocal separator ("+(e.message||"load error")+")"))};
+    w.onmessage=ev=>{
+      const m=ev.data;
+      if(m.type==="status"){setStatus(m.text);return}
+      if(m.type==="loaded"){resolve(w);return}
+      if(sepHandler)sepHandler(m);else if(m.type==="error"){sepReadyP=null;reject(new Error(m.error))}
+    };
+    w.postMessage({type:"load"});
+  });
+  return sepReadyP;
+}
+// Split the chosen section of the song into vocals and instrumental.
+async function separateSection(s,len){
+  const key=`${songId}|${s}|${len}`;if(sepCache.has(key))return sepCache.get(key);
+  const w=await getSep();
+  const SR=44100,pad=Math.min(.4,s),a=s-pad,total=len+pad+.4;
+  const ch=n=>songBuf.getChannelData(Math.min(n,songBuf.numberOfChannels-1));
+  const grab=async n=>{const src=ch(n),sr=songBuf.sampleRate,i0=Math.floor(a*sr),i1=Math.min(src.length,Math.floor((a+total)*sr));return resampleMono(src.slice(i0,i1),sr,SR)};
+  setStatus("Preparing the song for separation…");
+  const L=await grab(0),R=await grab(1);
+  const n=Math.min(L.length,R.length);
+  const res=await new Promise((resolve,reject)=>{
+    sepHandler=m=>{if(m.type==="status")setStatus(m.text);else if(m.type==="separated"){sepHandler=null;resolve(m)}else if(m.type==="error"){sepHandler=null;reject(new Error(m.error))}};
+    w.postMessage({type:"separate",id:1,left:L.slice(0,n),right:R.slice(0,n),mode:"fast"});
+  });
+  // vocals (mono) at 16 kHz, placed on the song's own timeline so it lines up with everything else
+  const vm=new Float32Array(n);for(let i=0;i<n;i++)vm[i]=(res.vocL[i]+res.vocR[i])/2;
+  const v16=await resampleMono(vm,SR,16000);
+  const f16=new Float32Array(Math.ceil(songBuf.duration*16000)+16000);
+  f16.set(v16.subarray(0,Math.max(0,Math.min(v16.length,f16.length-Math.floor(a*16000)))),Math.floor(a*16000));
+  // instrumental = mix - vocals (stereo), exactly the section [s, s+len]
+  const o0=Math.floor(pad*SR),N=Math.floor(len*SR),inst=actx.createBuffer(2,N,SR),il=inst.getChannelData(0),ir=inst.getChannelData(1);
+  for(let i=0;i<N&&o0+i<n;i++){il[i]=L[o0+i]-res.vocL[o0+i];ir[i]=R[o0+i]-res.vocR[o0+i]}
+  const out={f16,id:"sep"+key,inst,ms:res.ms};sepCache.set(key,out);return out;
+}
+
 // ================= COVER MODE: voice changer (kNN-VC, local) =================
 let coverVocals=null,coverBacking=null,vcW=null,vcReadyP=null,vcHandler=null,vcBusy=Promise.resolve();
 function getVC(){
@@ -1182,16 +1226,20 @@ function leadRuns(tl){
   return merged;
 }
 async function prepareCover(tl,s,len,vc){
-  if(!coverVocals)throw new Error("Cover mode needs the vocals-only file. Upload it under \"Cover files\".");
+  let sep=null;
+  if(coverVocals)vc.vocals=coverVocals;
+  else if($("autoSep").checked){sep=await separateSection(s,len);vc.vocals={f16:sep.f16,id:sep.id}}
+  else throw new Error("Cover mode needs vocals: upload a vocals-only file, or tick \"Make the acapella ... automatically\".");
   vc.runs=leadRuns(tl);
   vc.segsOf=marbles.map(()=>[]);
   for(const r of vc.runs)vc.segsOf[r.m].push({ta:r.f0/FPS,tb:Math.min(len,r.f1/FPS)});
   { // overall level: bring the vocals' typical (voiced) loudness to a healthy target
-    const v=coverVocals.f16,a=Math.floor(s*16000),b=Math.min(v.length,Math.floor((s+len)*16000));let pk=0;
+    const v=vc.vocals.f16,a=Math.floor(s*16000),b=Math.min(v.length,Math.floor((s+len)*16000));let pk=0;
     for(let i=a;i<b;i+=3)pk=Math.max(pk,Math.abs(v[i]));
     let e=0,c=0;for(let i=a;i<b;i++)if(Math.abs(v[i])>pk*.1){e+=v[i]*v[i];c++}
     vc.gain=Math.max(.4,Math.min(10,.2/(Math.sqrt(e/Math.max(1,c))||.1)));
   }
+  if(!coverBacking&&sep)vc.backing=sep.inst; // instrumental from the separation
   if(coverBacking){ // instrumental for this section
     const sr=coverBacking.sr,a=Math.floor(s*sr),N=Math.floor(len*sr),seg=new Float32Array(N);
     for(let i=0;i<N;i++)seg[i]=coverBacking.mono[a+i]||0;
@@ -1200,7 +1248,7 @@ async function prepareCover(tl,s,len,vc){
 }
 const COVER_PAD=.25;
 async function coverTrack(m,mi,vc,len){
-  const SR=16000,out=new Float32Array(Math.floor(len*SR)),v16=coverVocals.f16;
+  const SR=16000,out=new Float32Array(Math.floor(len*SR)),v16=vc.vocals.f16;
   const segs=vc.segsOf[mi];if(!segs.length)return out;
   const hasRef=!!(m.clone&&m.clone.a16);
   if(hasRef&&!m.clone.vcRef){await vcCall({type:"setref",name:m.clone.name,audio:m.clone.a16.slice()},"refset");m.clone.vcRef=true}

@@ -53,3 +53,9 @@ Only clone voices you have the right to use. Quality varies with the sample: use
 - onnxruntime-web files are shared with `ai/clone/`.
 
 Needs the acapella (vocals-only) of the same song, same length. Only convert voices you have the right to use.
+
+## Automatic vocal separation (Spleeter, fully local)
+Cover mode can make the acapella itself. `marbeat/ai/sep/` runs [Spleeter](https://github.com/deezer/spleeter) (Deezer, MIT), 2-stem vocals model,
+using the ONNX export from [csukuangfj/sherpa-onnx-spleeter-2stems](https://huggingface.co/csukuangfj/sherpa-onnx-spleeter-2stems) (fp32, `vocals.onnx`).
+`worker.js` does the STFT (4096/1024), runs the model on the section of the song you picked, builds a soft mask, and inverts the STFT.
+Instrumental = mix - vocals, so the two always sum to the original. A real acapella upload still sounds better.
