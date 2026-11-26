@@ -223,7 +223,7 @@ impl Renderer {
         // background gradient
         let bg = Paint { shader: LinearGradient::new(Point::from_xy(0.0, 0.0), Point::from_xy(0.0, H as f32),
             vec![GradientStop::new(0.0, col(pal.bg1, 1.0)), GradientStop::new(1.0, col(pal.bg2, 1.0))], SpreadMode::Pad, Transform::identity()).unwrap(), ..Paint::default() };
-        self.pm.fill_rect(Rect::from_xywh(0.0, 0.0, self.w as f32, self.h as f32).unwrap(), &bg, Transform::from_scale(1.0, self.h as f32 / H as f32), None);
+        self.pm.fill_rect(Rect::from_xywh(0.0, 0.0, W as f32, H as f32).unwrap(), &bg, base, None);
 
         // positions, interpolated between the 60 Hz physics steps
         let fa = (t * FPS).max(0.0);
