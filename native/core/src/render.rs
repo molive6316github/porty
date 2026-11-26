@@ -559,7 +559,7 @@ impl Renderer {
             let (tx, ty) = (fx - x0 as f32, fy - y0 as f32);
             let i = (y * w + x) * 4;
             let gi = ((self.frame_no as usize * 37 + x) % 256 + ((y + self.frame_no as usize * 91) % 256) * 256) % self.grain.len();
-            let g = (self.grain[gi] as f32 - 127.5) * 0.07;
+            let g = (self.grain[gi] as f32 - 127.5) * 0.015;
             let mut px = [0f32; 3];
             for c in 0..3 {
                 let s00 = small[(y0 * sw + x0) * 3 + c];

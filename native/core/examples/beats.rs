@@ -1,0 +1,1 @@
+fn main(){let p=std::env::args().nth(1).unwrap();let s=marbeat_core::audio::load_song(&p).unwrap();println!("sr {} dur {:.1}s bpm {:.1} beats {} first {:?}",s.sr,s.mono.len() as f64/s.sr as f64,s.bpm,s.beats.len(),&s.beats[..4.min(s.beats.len())]);}
