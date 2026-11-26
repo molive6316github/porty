@@ -1,0 +1,1 @@
+fn main(){let a:Vec<String>=std::env::args().collect();marbeat_ai::init(&a[1]).unwrap();let p=marbeat_ai::piper::Piper::load("/home/user/porty/marbeat/ai/piper/en_GB-vctk-medium.onnx","/home/user/porty/marbeat/ai/piper/en_GB-vctk-medium.onnx.json").unwrap();println!("{:?}",p.ipa(&a[2]));}

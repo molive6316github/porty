@@ -3,13 +3,58 @@ use crate::{audio::Song, render::*, sim::FPS};
 use std::io::Write;
 use std::process::{Command, Stdio};
 
+fn works(p: &str) -> bool {
+    Command::new(p).arg("-version").stdout(Stdio::null()).stderr(Stdio::null()).status().map(|s| s.success()).unwrap_or(false)
+}
+fn cache_file() -> std::path::PathBuf {
+    let base = std::env::var("LOCALAPPDATA").map(std::path::PathBuf::from).or_else(|_| std::env::var("HOME").map(|h| std::path::Path::new(&h).join(".config"))).unwrap_or_else(|_| ".".into());
+    base.join("Marbeat").join("ffmpeg-path.txt")
+}
+/// Depth-limited scan for an ffmpeg binary. Skips huge/irrelevant trees and stops at `deadline`.
+fn scan(dir: &std::path::Path, exe: &str, depth: u32, deadline: std::time::Instant, out: &mut Vec<std::path::PathBuf>) {
+    if depth == 0 || std::time::Instant::now() > deadline { return; }
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    let mut subs = vec![];
+    for e in rd.flatten() {
+        let Ok(ft) = e.file_type() else { continue };
+        let name = e.file_name().to_string_lossy().to_string();
+        if ft.is_file() { if name.eq_ignore_ascii_case(exe) { out.push(e.path()); } }
+        else if ft.is_dir() && !ft.is_symlink() {
+            let l = name.to_lowercase();
+            if matches!(l.as_str(), "windows" | "$recycle.bin" | "system volume information" | "node_modules" | ".git" | "proc" | "sys" | "dev" | "appdata\\locallow") || l.starts_with('.') && l != ".local" { continue; }
+            subs.push(e.path());
+        }
+    }
+    // shallow first: bin/ folders and anything that looks like ffmpeg before the rest
+    subs.sort_by_key(|p| { let l = p.to_string_lossy().to_lowercase(); if l.contains("ffmpeg") || l.ends_with("bin") { 0 } else { 1 } });
+    for s in subs { scan(&s, exe, depth - 1, deadline, out); }
+}
+/// Looks for ffmpeg everywhere sensible on this machine and remembers what it found.
 pub fn find_ffmpeg() -> Option<String> {
     let exe = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
-    let mut c = vec![];
-    if let Ok(p) = std::env::current_exe() { if let Some(d) = p.parent() { c.push(d.join(exe)); } }
-    if let Ok(d) = std::env::var("LOCALAPPDATA") { c.push(std::path::Path::new(&d).join("Marbeat").join(exe)); }
-    for p in c { if p.exists() { return Some(p.to_string_lossy().into()); } }
-    if Command::new(exe).arg("-version").stdout(Stdio::null()).stderr(Stdio::null()).status().map(|s| s.success()).unwrap_or(false) { return Some(exe.into()); }
+    if let Ok(t) = std::fs::read_to_string(cache_file()) { let t = t.trim(); if !t.is_empty() && std::path::Path::new(t).exists() && works(t) { return Some(t.into()); } }
+    let remember = |p: &str| { let f = cache_file(); if let Some(d) = f.parent() { let _ = std::fs::create_dir_all(d); } let _ = std::fs::write(f, p); p.to_string() };
+    if let Ok(p) = std::env::var("MARBEAT_FFMPEG") { if works(&p) { return Some(remember(&p)); } }
+    let mut quick: Vec<std::path::PathBuf> = vec![];
+    if let Ok(p) = std::env::current_exe() { if let Some(d) = p.parent() { quick.push(d.join(exe)); quick.push(d.join("bin").join(exe)); } }
+    if let Ok(d) = std::env::var("LOCALAPPDATA") { quick.push(std::path::Path::new(&d).join("Marbeat").join(exe)); }
+    for p in quick { if p.exists() && works(&p.to_string_lossy()) { return Some(remember(&p.to_string_lossy())); } }
+    if works(exe) { return Some(exe.into()); } // on PATH
+    // common install spots, then a bounded scan of the machine
+    let mut roots: Vec<std::path::PathBuf> = vec![];
+    if cfg!(windows) {
+        for v in ["ProgramFiles", "ProgramFiles(x86)", "ProgramData", "LOCALAPPDATA", "APPDATA", "USERPROFILE"] { if let Ok(d) = std::env::var(v) { roots.push(d.into()); } }
+        for d in b'C'..=b'H' { roots.push(format!("{}:\\", d as char).into()); }
+    } else {
+        for d in ["/usr/local/bin", "/opt", "/snap", "/usr/bin"] { roots.push(d.into()); }
+        if let Ok(h) = std::env::var("HOME") { roots.push(h.into()); }
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(25);
+    for r in roots {
+        let mut found = vec![];
+        scan(&r, exe, if r.parent().is_none() { 4 } else { 6 }, deadline, &mut found);
+        for p in found { let s = p.to_string_lossy().to_string(); if works(&s) { return Some(remember(&s)); } }
+    }
     None
 }
 
