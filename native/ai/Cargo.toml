@@ -8,3 +8,5 @@ ort = { version = "=2.0.0-rc.10", default-features = false, features = ["load-dy
 ndarray = "0.16"
 espeak-ng = { version = "0.2", features = ["bundled-data-en"] }
 serde_json = "1"
+rustfft = "6"
+marbeat-core = { path = "../core" }

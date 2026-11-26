@@ -11,3 +11,4 @@ rodio = { version = "0.19", default-features = false, features = ["symphonia-all
 ureq = "2"
 sha2 = "0.10"
 serde_json = "1"
+marbeat-ai = { path = "../ai" }

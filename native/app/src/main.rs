@@ -1,3 +1,4 @@
+mod ai;
 mod update;
 use eframe::egui;
 use marbeat_core::course::MAPS;
@@ -45,6 +46,13 @@ struct App {
     eff_seed: String,
     tour: Option<Tour>,
     tab: u8,
+    spk: Vec<i64>,
+    clones: Vec<Option<String>>,
+    lyrics: String,
+    voiced: Option<Vec<f32>>,
+    ai_status: Arc<Mutex<String>>,
+    ai_busy: Arc<AtomicBool>,
+    ai_out: Arc<Mutex<Option<Result<ai::Result_, String>>>>,
 }
 
 #[derive(Clone, Default)]
@@ -60,7 +68,7 @@ fn cfg_path() -> std::path::PathBuf {
 impl App {
     fn new() -> Self {
         let mut a = App { map: 0, seed: "42".into(), n: 6, len: 40.0, tl: None, beats: (0..2000).map(|i| i as f64 * 0.5).collect(), chars: vec![], r: Renderer::new(405, 720), tex: None, t: 0.0, playing: true, last: Instant::now(), song: None, status: "No song loaded".into(), _stream: OutputStream::try_default().ok(), sink: None, prog: Default::default(), total: Default::default(), cancel: Default::default(), exporting: Default::default(), result: Default::default(), hd: true, upd: Default::default(), upd_msg: Default::default(), upd_busy: Default::default(),
-            roster: (0..8).map(|i| (COLS[i], NAMES[i].to_string())).collect(), rig: false, plan: vec![], rig_winner: None, active: vec![], eff_seed: String::new(), tour: None, tab: 0 };
+            roster: (0..8).map(|i| (COLS[i], NAMES[i].to_string())).collect(), rig: false, plan: vec![], rig_winner: None, active: vec![], eff_seed: String::new(), tour: None, tab: 0, spk: vec![10, 25, 40, 60, 75, 90, 5, 100], clones: vec![None; 8], lyrics: String::new(), voiced: None, ai_status: Default::default(), ai_busy: Default::default(), ai_out: Default::default() };
         a.load_cfg();
         if let Ok(t) = std::env::var("MARBEAT_TAB") { a.tab = t.parse().unwrap_or(0); }
         update::cleanup_old();
@@ -71,10 +79,11 @@ impl App {
     fn start_audio(&mut self) {
         self.sink = None;
         if let (Some(song), Some((_, h))) = (&self.song, &self._stream) {
+            let stereo: &Vec<f32> = self.voiced.as_ref().unwrap_or(&song.stereo);
             if let Ok(sink) = Sink::try_new(h) {
                 let skip = (self.t * song.sr as f64) as usize * 2;
-                if skip < song.stereo.len() {
-                    sink.append(SamplesBuffer::new(2, song.sr, song.stereo[skip..].to_vec()));
+                if skip < stereo.len() {
+                    sink.append(SamplesBuffer::new(2, song.sr, stereo[skip..].to_vec()));
                     if !self.playing { sink.pause(); }
                     self.sink = Some(sink);
                 }
@@ -99,7 +108,7 @@ impl App {
         let (key, seed, n, len, beats, hd) = (MAPS[self.map].key, self.eff_seed.clone(), self.active.len(), self.len as f64, self.beats.clone(), self.hd);
         let plan: Vec<(f64, usize)> = if self.rig { self.plan.iter().cloned().filter(|(_, m)| *m < n).collect() } else { vec![] };
         let rw = if self.rig { self.rig_winner.filter(|w| *w < n) } else { None };
-        let song = self.song.as_ref().map(|s| Song { sr: s.sr, mono: vec![], stereo: s.stereo.clone(), beats: vec![], bpm: s.bpm });
+        let song = self.song.as_ref().map(|s| Song { sr: s.sr, mono: vec![], stereo: self.voiced.clone().unwrap_or_else(|| s.stereo.clone()), beats: vec![], bpm: s.bpm });
         let chars: Vec<(String, [u8; 3])> = self.chars.iter().map(|c| (c.name.clone(), c.color)).collect();
         let (prog, total, cancel, busy, res) = (self.prog.clone(), self.total.clone(), self.cancel.clone(), self.exporting.clone(), self.result.clone());
         cancel.store(false, Ordering::SeqCst);
@@ -124,6 +133,9 @@ impl App {
                         }
                     }
                 }
+                if let Some(a) = j["speakers"].as_array() { for (i, v) in a.iter().enumerate().take(8) { if let Some(x) = v.as_i64() { self.spk[i] = x; } } }
+                if let Some(a) = j["clones"].as_array() { for (i, v) in a.iter().enumerate().take(8) { self.clones[i] = v.as_str().map(|x| x.to_string()); } }
+                if let Some(x) = j["lyrics"].as_str() { self.lyrics = x.into(); }
                 if let Some(x) = j["seed"].as_str() { self.seed = x.into(); }
                 if let Some(x) = j["n"].as_u64() { self.n = (x as usize).clamp(2, 8); }
                 if let Some(x) = j["map"].as_u64() { self.map = (x as usize).min(MAPS.len() - 1); }
@@ -132,8 +144,28 @@ impl App {
         self.rebuild();
     }
     fn save_cfg(&self) {
-        let j = serde_json::json!({"roster": self.roster.iter().map(|(c, n)| serde_json::json!({"name": n, "color": c})).collect::<Vec<_>>(), "seed": self.seed, "n": self.n, "map": self.map});
+        let j = serde_json::json!({"roster": self.roster.iter().map(|(c, n)| serde_json::json!({"name": n, "color": c})).collect::<Vec<_>>(), "speakers": self.spk, "clones": self.clones, "lyrics": self.lyrics, "seed": self.seed, "n": self.n, "map": self.map});
         let _ = std::fs::write(cfg_path(), j.to_string());
+    }
+    fn start_audio_at(&mut self, t: f64) { let keep = self.t; self.t = t; self.start_audio(); self.t = keep; }
+    fn start_sing(&mut self) {
+        let Some(song) = &self.song else { return };
+        let Some(tl) = &self.tl else { return };
+        // who leads at each frame (roster index), for the whole race
+        let lead: Vec<usize> = tl.lead_a.iter().map(|&a| self.active.get(a as usize).copied().unwrap_or(0)).collect();
+        let voices: Vec<ai::Voice> = (0..8).map(|i| ai::Voice { speaker: self.spk[i], clone: self.clones[i].clone() }).collect();
+        let (stereo, sr, lyrics) = (song.stereo.clone(), song.sr, self.lyrics.clone());
+        let (st, busy, out) = (self.ai_status.clone(), self.ai_busy.clone(), self.ai_out.clone());
+        busy.store(true, Ordering::SeqCst);
+        *st.lock().unwrap() = "Starting…".into();
+        std::thread::spawn(move || {
+            let st2 = st.clone();
+            let status = move |s: String| *st2.lock().unwrap() = s;
+            let leader_at = move |t: f64| lead[((t * 60.0) as usize).min(lead.len().saturating_sub(1))];
+            let r = ai::run(&stereo, sr, &lyrics, &voices, &leader_at, &status);
+            *out.lock().unwrap() = Some(r);
+            busy.store(false, Ordering::SeqCst);
+        });
     }
     fn rebuild(&mut self) {
         let key = MAPS[self.map].key;
@@ -201,7 +233,9 @@ impl eframe::App for App {
         let mut export = false;
         let mut save = false;
         let mut tour_next = false;
-        egui::SidePanel::left("ctl").exact_width(220.0).show(ctx, |ui| {
+        let mut sing_go = false;
+        let mut restart_audio = false;
+        egui::SidePanel::left("ctl").exact_width(250.0).show(ctx, |ui| {
             ui.heading("Marbeat");
             ui.label(format!("native Rust build · v{}", update::VERSION));
             let info = self.upd.lock().unwrap().clone();
@@ -216,12 +250,22 @@ impl eframe::App for App {
                 }
             }
             { let m = self.upd_msg.lock().unwrap(); if !m.is_empty() { ui.small(m.as_str()); } }
-            ui.horizontal(|ui| { for (i, l) in ["Race", "Cast", "Director", "Tournament"].iter().enumerate() { ui.selectable_value(&mut self.tab, i as u8, *l); } });
+            ui.horizontal(|ui| { for (i, l) in ["Race", "Cast", "Rig", "Cup", "Voices"].iter().enumerate() { ui.selectable_value(&mut self.tab, i as u8, *l); } });
             ui.separator();
             match self.tab {
                 1 => {
                     let mut ch = false;
-                    for (c, n) in self.roster.iter_mut() { ui.horizontal(|ui| { ch |= ui.color_edit_button_srgb(c).changed(); ch |= ui.add(egui::TextEdit::singleline(n).desired_width(110.0)).changed(); }); }
+                    for (i, (c, n)) in self.roster.iter_mut().enumerate() { ui.horizontal(|ui| {
+                        ch |= ui.color_edit_button_srgb(c).changed();
+                        ch |= ui.add(egui::TextEdit::singleline(n).desired_width(80.0)).changed();
+                        ch |= ui.add(egui::DragValue::new(&mut self.spk[i]).range(0..=108).prefix("voice ")).changed();
+                        let lbl = if self.clones[i].is_some() { "clone ✓" } else { "clone…" };
+                        if ui.small_button(lbl).clicked() {
+                            if self.clones[i].is_some() { self.clones[i] = None; ch = true; }
+                            else if let Some(f) = rfd::FileDialog::new().add_filter("voice sample", &["wav", "mp3", "flac", "ogg", "m4a"]).pick_file() { self.clones[i] = Some(f.to_string_lossy().to_string()); ch = true; }
+                        }
+                    }); }
+                    ui.small("clone: pick a 5-15 s clean recording of someone talking");
                     if ch { save = true; for (k, &i) in self.active.iter().enumerate() { if let Some(c) = self.chars.get_mut(k) { c.name = self.roster[i].1.clone(); c.color = self.roster[i].0; } } }
                     return;
                 }
@@ -244,6 +288,19 @@ impl eframe::App for App {
                         egui::ComboBox::from_id_salt("win").selected_text(cur).show_ui(ui, |ui| { ui.selectable_value(&mut self.rig_winner, None, "anyone"); for (i, n) in names.iter().enumerate() { ui.selectable_value(&mut self.rig_winner, Some(i), n); } });
                     });
                     if ui.button("Apply (restart race)").clicked() { rebuild = true; }
+                    return;
+                }
+                4 => {
+                    ui.small("Paste the lyrics, one line per row. The marbeats AI hears the song, syncs the words, and whoever's in the lead sings each line.");
+                    if ui.add(egui::TextEdit::multiline(&mut self.lyrics).desired_rows(10).desired_width(230.0)).changed() { save = true; }
+                    let busy = self.ai_busy.load(Ordering::Relaxed);
+                    if busy { ui.spinner(); ui.small(self.ai_status.lock().unwrap().clone()); }
+                    else {
+                        if ui.add_enabled(self.song.is_some() && !self.lyrics.trim().is_empty(), egui::Button::new("Sing the lyrics (AI)")).clicked() { sing_go = true; }
+                        if self.song.is_none() { ui.small("Open a song first (Race tab)."); }
+                        if self.voiced.is_some() && ui.button("Back to the original song").clicked() { self.voiced = None; restart_audio = true; }
+                        let st = self.ai_status.lock().unwrap().clone(); if !st.is_empty() { ui.small(st); }
+                    }
                     return;
                 }
                 3 => {
@@ -289,6 +346,12 @@ impl eframe::App for App {
             if ui.button("New random seed").clicked() { self.seed = format!("{}", (now.elapsed().subsec_nanos() ^ 0x5bd1e995) % 100000); rebuild = true; }
         });
         if save { self.save_cfg(); }
+        if sing_go { self.start_sing(); }
+        if restart_audio { let t = self.t; self.start_audio_at(t); }
+        let finished = self.ai_out.lock().unwrap().take();
+        if let Some(r) = finished {
+            match r { Ok(o) => { *self.ai_status.lock().unwrap() = format!("Done: {} lines sung ({} words heard)", o.lines, o.heard); self.voiced = Some(o.mixed); let t = self.t; self.start_audio_at(t); } Err(e) => *self.ai_status.lock().unwrap() = format!("AI failed: {e}") }
+        }
         if tour_next { self.tour_next(); rebuild = false; }
         if self.tour.is_some() && self.tl.as_ref().map(|t| self.t >= t.win_time + 0.5).unwrap_or(false) { self.tour_step(); }
         if export { self.export(); }
@@ -315,6 +378,19 @@ impl eframe::App for App {
 fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--version") { println!("marbeat v{}", update::VERSION); return Ok(()); }
+    if let Some(i) = args.iter().position(|a| a == "--sing") {
+        // headless pipeline test: --sing <song> <lyrics.txt> <out.wav> [clone.wav]
+        let song = marbeat_core::audio::load_song(&args[i + 1]).expect("song");
+        let lyrics = std::fs::read_to_string(&args[i + 2]).expect("lyrics");
+        let voices: Vec<ai::Voice> = (0..2).map(|k| ai::Voice { speaker: if k == 0 { 10 } else { 70 }, clone: if k == 1 { args.get(i + 4).cloned() } else { None } }).collect();
+        let t0 = Instant::now();
+        let r = ai::run(&song.stereo, song.sr, &lyrics, &voices, &|t| if t < 4.5 { 0 } else { 1 }, &|s| eprintln!("{s}"));
+        match r {
+            Ok(o) => { eprintln!("ok {} lines, {} words heard, {:?}", o.lines, o.heard, t0.elapsed()); let mut f = std::fs::File::create(&args[i + 3]).unwrap(); let n = o.mixed.len(); use std::io::Write; f.write_all(b"RIFF").unwrap(); f.write_all(&(36 + n as u32 * 2).to_le_bytes()).unwrap(); f.write_all(b"WAVEfmt ").unwrap(); f.write_all(&16u32.to_le_bytes()).unwrap(); f.write_all(&1u16.to_le_bytes()).unwrap(); f.write_all(&2u16.to_le_bytes()).unwrap(); f.write_all(&song.sr.to_le_bytes()).unwrap(); f.write_all(&(song.sr * 4).to_le_bytes()).unwrap(); f.write_all(&4u16.to_le_bytes()).unwrap(); f.write_all(&16u16.to_le_bytes()).unwrap(); f.write_all(b"data").unwrap(); f.write_all(&(n as u32 * 2).to_le_bytes()).unwrap(); for v in o.mixed { f.write_all(&((v.clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes()).unwrap(); } }
+            Err(e) => { eprintln!("FAILED: {e}"); std::process::exit(1); }
+        }
+        return Ok(());
+    }
     if args.iter().any(|a| a == "--self-update") {
         match update::check() { Ok(Some(i)) => { println!("updating to v{}", i.version); if let Err(e) = update::install(&i, |_, _| {}) { eprintln!("failed: {e}"); std::process::exit(1); } } Ok(None) => println!("up to date"), Err(e) => { eprintln!("check failed: {e}"); std::process::exit(1); } }
         return Ok(());
