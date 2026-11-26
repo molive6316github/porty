@@ -1,3 +1,4 @@
+mod update;
 use eframe::egui;
 use marbeat_core::course::MAPS;
 use marbeat_core::render::*;
@@ -33,11 +34,16 @@ struct App {
     exporting: Arc<AtomicBool>,
     result: Arc<Mutex<Option<String>>>,
     hd: bool,
+    upd: Arc<Mutex<Option<update::Info>>>,
+    upd_msg: Arc<Mutex<String>>,
+    upd_busy: Arc<AtomicBool>,
 }
 
 impl App {
     fn new() -> Self {
-        let mut a = App { map: 0, seed: "42".into(), n: 6, len: 40.0, tl: None, beats: (0..2000).map(|i| i as f64 * 0.5).collect(), chars: vec![], r: Renderer::new(405, 720), tex: None, t: 0.0, playing: true, last: Instant::now(), song: None, status: "No song loaded".into(), _stream: OutputStream::try_default().ok(), sink: None, prog: Default::default(), total: Default::default(), cancel: Default::default(), exporting: Default::default(), result: Default::default(), hd: true };
+        let mut a = App { map: 0, seed: "42".into(), n: 6, len: 40.0, tl: None, beats: (0..2000).map(|i| i as f64 * 0.5).collect(), chars: vec![], r: Renderer::new(405, 720), tex: None, t: 0.0, playing: true, last: Instant::now(), song: None, status: "No song loaded".into(), _stream: OutputStream::try_default().ok(), sink: None, prog: Default::default(), total: Default::default(), cancel: Default::default(), exporting: Default::default(), result: Default::default(), hd: true, upd: Default::default(), upd_msg: Default::default(), upd_busy: Default::default() };
+        update::cleanup_old();
+        { let (u, m) = (a.upd.clone(), a.upd_msg.clone()); std::thread::spawn(move || match update::check() { Ok(Some(i)) => *u.lock().unwrap() = Some(i), Ok(None) => {}, Err(e) => *m.lock().unwrap() = format!("Update check failed: {e}") }); }
         a.rebuild();
         a
     }
@@ -111,7 +117,19 @@ impl eframe::App for App {
         let mut export = false;
         egui::SidePanel::left("ctl").exact_width(220.0).show(ctx, |ui| {
             ui.heading("Marbeat");
-            ui.label("native Rust build");
+            ui.label(format!("native Rust build · v{}", update::VERSION));
+            let info = self.upd.lock().unwrap().clone();
+            if let Some(i) = info {
+                ui.colored_label(egui::Color32::from_rgb(120, 255, 140), format!("Update v{} available", i.version));
+                if !i.notes.is_empty() { ui.small(&i.notes); }
+                if self.upd_busy.load(Ordering::Relaxed) { ui.spinner(); }
+                else if ui.button("Update & restart").clicked() {
+                    self.upd_busy.store(true, Ordering::SeqCst);
+                    let (m, b, ii) = (self.upd_msg.clone(), self.upd_busy.clone(), i.clone());
+                    std::thread::spawn(move || { *m.lock().unwrap() = "Downloading update…".into(); if let Err(e) = update::install(&ii, |_, _| {}) { *m.lock().unwrap() = format!("Update failed: {e}"); } b.store(false, Ordering::SeqCst); });
+                }
+            }
+            { let m = self.upd_msg.lock().unwrap(); if !m.is_empty() { ui.small(m.as_str()); } }
             ui.separator();
             if ui.button("Open song…").clicked() {
                 if let Some(f) = rfd::FileDialog::new().add_filter("audio", &["mp3", "wav", "flac", "ogg", "m4a", "aac"]).pick_file() { load_path = Some(f.to_string_lossy().to_string()); }
@@ -162,5 +180,11 @@ impl eframe::App for App {
 }
 
 fn main() -> eframe::Result {
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--version") { println!("marbeat v{}", update::VERSION); return Ok(()); }
+    if args.iter().any(|a| a == "--self-update") {
+        match update::check() { Ok(Some(i)) => { println!("updating to v{}", i.version); if let Err(e) = update::install(&i, |_, _| {}) { eprintln!("failed: {e}"); std::process::exit(1); } } Ok(None) => println!("up to date"), Err(e) => { eprintln!("check failed: {e}"); std::process::exit(1); } }
+        return Ok(());
+    }
     eframe::run_native("Marbeat", eframe::NativeOptions { viewport: egui::ViewportBuilder::default().with_inner_size([760.0, 780.0]), ..Default::default() }, Box::new(|_| Ok(Box::new(App::new()))))
 }
