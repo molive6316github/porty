@@ -63,8 +63,6 @@ pub fn find_beats(sr: u32, mono: &[f32]) -> (Vec<f64>, f64) {
     }
     if env.len() < 400 { return (vec![], 120.0); }
     let fps = sr as f64 / hop as f64;
-    // an onset shows up in the flux when it is about a quarter of the way into the analysis window
-    let lat = (win as f64 / 4.0) / sr as f64;
     let w = 100;
     let mut eo: Vec<f32> = (0..env.len()).map(|i| { let a = i.saturating_sub(w); let b = (i + w).min(env.len() - 1); let m = env[a..=b].iter().sum::<f32>() / (b - a + 1) as f32; (env[i] - m).max(0.0) }).collect();
     let sm: Vec<f32> = (0..eo.len()).map(|i| 0.25 * eo[i.saturating_sub(1)] + 0.5 * eo[i] + 0.25 * eo[(i + 1).min(eo.len() - 1)]).collect();
@@ -115,7 +113,8 @@ pub fn find_beats(sr: u32, mono: &[f32]) -> (Vec<f64>, f64) {
     frames.reverse();
     if frames.len() < 8 { return (vec![], 60.0 * fps / p0); }
     // flux peaks sit a fixed amount after the true onset; remove that (calibrated against known click tracks)
-    let delay = 0.0205;
+    // the flux peak lands when the onset is about 63 % of the way into the analysis window (calibrated on click tracks at 22.05 and 44.1 kHz)
+    let delay = 0.634 * win as f64 / sr as f64;
     // drop stray weak beats at the very start / end (the chain is free to begin and end anywhere)
     let strength: Vec<f32> = frames.iter().map(|f| o[(*f as usize).min(n - 1)]).collect();
     let mut ss = strength.clone(); ss.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -124,7 +123,7 @@ pub fn find_beats(sr: u32, mono: &[f32]) -> (Vec<f64>, f64) {
     while a0 + 8 < z0 && strength[a0] < 0.3 * med { a0 += 1; }
     while z0 > a0 + 8 && strength[z0 - 1] < 0.3 * med { z0 -= 1; }
     let frames: Vec<f64> = frames[a0..z0].to_vec();
-    let beats: Vec<f64> = frames.iter().map(|f| f / fps + delay - lat).filter(|t| *t >= 0.0).collect();
+    let beats: Vec<f64> = frames.iter().map(|f| f / fps + delay).filter(|t| *t >= 0.0).collect();
     let mut iv: Vec<f64> = beats.windows(2).map(|w| w[1] - w[0]).collect();
     iv.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let bpm = 60.0 / iv[iv.len() / 2];
