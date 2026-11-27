@@ -74,7 +74,7 @@ pub fn row_label(ui: &mut egui::Ui, text: &str) { ui.label(RichText::new(text).c
 /// pill tab, returns true when clicked
 pub fn tab(ui: &mut egui::Ui, selected: bool, text: &str) -> bool {
     let b = egui::Button::new(RichText::new(text).strong().color(if selected { Color32::WHITE } else { MUTED })).fill(if selected { ACCENT } else { Color32::TRANSPARENT }).stroke(Stroke::NONE).rounding(18.0).min_size(Vec2::new(0.0, 32.0));
-    ui.add(b).clicked()
+    ui.scope(|ui| { ui.spacing_mut().button_padding.x = 11.0; ui.add(b).clicked() }).inner
 }
 
 pub fn badge(ui: &mut egui::Ui, text: &str, color: Color32) {
