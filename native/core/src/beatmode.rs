@@ -117,6 +117,10 @@ pub fn build(cfg: &BeatCfg) -> Option<(Course, Sim, usize)> {
             }
             d[i][s] = d[i][s - 1] + h * (1.0 + dd.clamp(-0.35, if closing { 2.2 } else { 1.2 }));
         }
+        // rubber band: nobody falls further than a screen-ish behind the leader, so the whole pack stays in view and in play
+        let lead_d = (0..n).map(|i| d[i][s]).fold(f64::MIN, f64::max);
+        let slack = 400.0;
+        for i in 0..n { let behind = lead_d - d[i][s]; if behind > slack { d[i][s] += ((behind - slack) * 0.15).min(0.35 * h); } }
     }
     let depth = |i: usize, t: f64| -> f64 {
         let x = (t / step).max(0.0);
@@ -150,36 +154,95 @@ pub fn build(cfg: &BeatCfg) -> Option<(Course, Sim, usize)> {
     let total_named_lane = (W - 100.0) / n as f64;
     let wall_l = RAD + 1.0;
     let wall_r = W - RAD - 1.0;
-    let mut chains: Vec<Chain> = vec![];
-    for i in 0..n {
-        let times = station_times(i, true);
-        let (amp, freq, phase) = (7.0 + 13.0 * rng.next(), 0.22 + 0.5 * rng.next(), rng.next() * 6.28);
-        let lane = 50.0 + total_named_lane * (i as f64 + 0.5);
-        let half = (total_named_lane * 0.5 - 15.0).max(6.0);
-        let mut c = Chain::default();
-        let release = (times[0] - period).max(1.3);
-        c.t.push(release); c.x.push(lane); c.y.push(y0); c.wall.push(false);
-        let mut was_wall = false;
-        for (k, t) in times.iter().enumerate() {
-            let mut x = lane + (amp * (2.0 * std::f64::consts::PI * freq * t + phase).sin() + (rng.next() - 0.5) * 5.0).clamp(-half, half);
-            let mut wall = false;
-            // the outer marbles sometimes kick off the wall
-            if (i == 0 || i == n - 1) && k > 0 && k + 1 < times.len() && !was_wall && rng.next() < 0.24 { x = if i == 0 { wall_l } else { wall_r }; wall = true; }
-            was_wall = wall;
-            c.t.push(*t); c.x.push(x.clamp(RAD + 1.0, W - RAD - 1.0)); c.y.push(depth(i, *t)); c.wall.push(wall);
+    let (mut chains, mut rng_after) = (vec![], rng.clone());
+    for (attempt, scale) in [1.0f64, 0.7, 0.45, 0.0].iter().enumerate() {
+        let scale = *scale;
+        let mut rng = rng.clone();
+        let mut chains_try: Vec<Chain> = vec![];
+        let mut worst_ok = true;
+        {
+            let chains = &mut chains_try;
+        let mid = W / 2.0;
+        let reach = (W / 2.0 - RAD - 26.0).max(40.0);
+        for i in 0..n {
+            let times = station_times(i, true);
+            // every marble wanders across the whole track on its own slow path, so the pack mixes and they cross over each other
+            let (amp, freq, phase) = (scale * (0.55 + 0.4 * rng.next()), 0.05 + 0.07 * rng.next(), rng.next() * 6.28);
+            let wob = (4.0 + 6.0 * rng.next(), 0.5 + 0.9 * rng.next(), rng.next() * 6.28);
+            let lane = 50.0 + total_named_lane * (i as f64 + 0.5);
+            let mut c = Chain::default();
+            let release = (times[0] - period).max(1.3);
+            c.t.push(release); c.x.push(lane); c.y.push(y0); c.wall.push(false);
+            let mut was_wall = false;
+            for (k, t) in times.iter().enumerate() {
+                let last = k + 1 == times.len();
+                // the wander fades in over the first seconds from the starting lane, and everyone lines up again for the finish
+                let fade = ((*t - release - 2.0) / 6.0).clamp(0.0, 1.0);
+                let w = mid + reach * amp * (2.0 * std::f64::consts::PI * freq * t + phase).sin() + wob.0 * (wob.1 * t + wob.2).sin();
+                let mut x = if last { lane } else { lane + (w - lane) * fade };
+                let mut wall = false;
+                // out by a wall, a marble sometimes kicks off it
+                if !last && k > 0 && !was_wall && (x < wall_l + 70.0 || x > wall_r - 70.0) && rng.next() < 0.6 { x = if x < mid { wall_l } else { wall_r }; wall = true; }
+                was_wall = wall;
+                c.t.push(*t); c.x.push(x.clamp(RAD + 1.0, W - RAD - 1.0)); c.y.push(depth(i, *t)); c.wall.push(wall);
+            }
+            // keep depths strictly increasing so every arc is a proper fall
+            for k in 1..c.t.len() { if c.y[k] < c.y[k - 1] + 6.0 { c.y[k] = c.y[k - 1] + 6.0; } }
+            chains.push(c);
         }
-        // keep depths strictly increasing so every arc is a proper fall
-        for k in 1..c.t.len() { if c.y[k] < c.y[k - 1] + 6.0 { c.y[k] = c.y[k - 1] + 6.0; } }
-        arc(&mut c);
-        chains.push(c);
+        // marbles that would touch are nudged apart sideways at their nearest hits until nobody overlaps
+        {
+            let at = |c: &Chain, t: f64| -> (f64, f64) {
+                let kk = c.t.len();
+                if t <= c.t[0] { return (c.x[0], c.y[0]); }
+                if t >= c.t[kk - 1] { return (c.x[kk - 1], c.y[kk - 1] + c.vout[kk - 1].1 * (t - c.t[kk - 1])); }
+                let k = c.t.partition_point(|x| *x <= t).saturating_sub(1).min(kk - 2);
+                let s = t - c.t[k];
+                (c.x[k] + c.vout[k].0 * s, c.y[k] + c.vout[k].1 * s + 0.5 * GRAV * s * s)
+            };
+            let need = 2.0 * RAD + 7.0;
+            for _ in 0..120 {
+                for c in chains.iter_mut() { arc(c); }
+                let mut moved = false; worst_ok = true;
+                let mut tt = 1.3;
+                while tt < target + 0.4 {
+                    for a in 0..n { for b in (a + 1)..n {
+                        let (pa, pb) = (at(&chains[a], tt), at(&chains[b], tt));
+                        let dist = (pa.0 - pb.0).hypot(pa.1 - pb.1);
+                        if dist >= need { continue; }
+                        if dist < need - 1.5 { worst_ok = false; }
+                        let sgn = if pa.0 > pb.0 { 1.0 } else if pa.0 < pb.0 { -1.0 } else if a < b { -1.0 } else { 1.0 };
+                        let push = (need - dist) * 0.5 + 4.0;
+                        for (m, dir) in [(a, sgn), (b, -sgn)] {
+                            let c = &mut chains[m];
+                            // the two hits either side of this moment both move, so the arc between them shifts as a whole
+                            let k = c.t.partition_point(|x| *x <= tt).max(1).min(c.t.len() - 1);
+                            for kk in [k.saturating_sub(1).max(1), k] {
+                                if c.wall[kk] { continue; }
+                                c.x[kk] = (c.x[kk] + dir * push).clamp(RAD + 1.0, W - RAD - 1.0);
+                                moved = true;
+                            }
+                        }
+                    } }
+                    tt += 1.0 / 30.0;
+                }
+                if !moved || worst_ok { if !moved { worst_ok = true; } break; }
+            }
+            for c in chains.iter_mut() { arc(c); }
+        }
+        }
+        // the last, lane-only attempt is accepted whatever happens: lanes can't overlap
+        if worst_ok || attempt == 3 { chains = chains_try; rng_after = rng; break; }
     }
+    let mut rng = rng_after;
+
     // crowd: appears while the music is intense enough, sliding in from above and out again
     let mut crowd_present = vec![false; CROWD_MAX];
     for j in 0..ncrowd {
         let thr = 0.52 + 0.1 * j as f64;
         let times = station_times(n + j, false);
         let lane = 50.0 + (W - 100.0) * (j as f64 + 1.0) / (CROWD_MAX as f64 + 1.0);
-        let off_j = 90.0 + rng.next() * 330.0;
+        let off_j = 380.0 + rng.next() * 220.0; // behind the named pack
         let mut c = Chain::default();
         let mut pres = 0.0f64;
         let (amp, phase) = (6.0 + 6.0 * rng.next(), rng.next() * 6.28);
@@ -318,13 +381,15 @@ pub fn build(cfg: &BeatCfg) -> Option<(Course, Sim, usize)> {
             for _ in 0..9 {
                 let x = 28.0 + rng.next() * (W - 56.0);
                 let yy = y + rng.next() * 70.0;
-                let peg = rng.next() < 0.55;
+                let peg = rng.next() < 0.4;
                 if peg {
                     if clear(x, yy, RAD + 5.0 + 9.0) { segs.push(Seg { x1: x, y1: yy, x2: x, y2: yy, r: 5.0, e: 0.9, kind: Kind::Peg, t0: 1e9, vis0: -1e9, t1: 1e9, shape: shape::PEG, owner: 255, kick: 0.0, bvx: 0.0 }); placed += 1; }
                 } else {
-                    let ang = (rng.next() - 0.5) * 1.1;
-                    let (dx, dy) = (ang.cos() * 24.0, ang.sin() * 24.0);
-                    if clear(x, yy, RAD + 3.0 + 24.0 + 6.0) { segs.push(Seg { x1: x - dx, y1: yy - dy, x2: x + dx, y2: yy + dy, r: 3.0, e: 0.9, kind: Kind::Ramp, t0: 1e9, vis0: -1e9, t1: 1e9, shape: shape::PLANK, owner: 255, kick: 0.0, bvx: 0.0 }); placed += 1; }
+                    // rails tilt in alternating directions row by row, so the decoration reads as a zig-zag track
+                    let dir = if ((yy / 140.0) as i64) % 2 == 0 { 1.0 } else { -1.0 };
+                    let ang = dir * (0.28 + 0.4 * rng.next());
+                    let (dx, dy) = (ang.cos() * 30.0, ang.sin() * 30.0);
+                    if clear(x, yy, RAD + 3.0 + 30.0 + 6.0) { segs.push(Seg { x1: x - dx, y1: yy - dy, x2: x + dx, y2: yy + dy, r: 3.0, e: 0.9, kind: Kind::Ramp, t0: 1e9, vis0: -1e9, t1: 1e9, shape: shape::PLANK, owner: 255, kick: 0.0, bvx: 0.0 }); placed += 1; }
                 }
             }
             y += 40.0;

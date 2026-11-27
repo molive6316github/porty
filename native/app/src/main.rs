@@ -812,12 +812,8 @@ impl App {
             if ui.checkbox(&mut self.sync_music, "Sync the whole race to the music").changed() { a.rebuild = true; a.save = true; }
             if self.song.is_none() { muted(ui, "Open a song and the race will fit it automatically."); }
             else if self.sync_music {
-                ui.horizontal(|ui| {
-                    if ui.selectable_label(self.sync_style == 0, "Designed map").clicked() { self.sync_style = 0; a.rebuild = true; a.save = true; }
-                    if ui.selectable_label(self.sync_style == 1, "Lane pads").clicked() { self.sync_style = 1; a.rebuild = true; a.save = true; }
-                });
-                if self.sync_style == 0 { muted(ui, "A map of ramps and trampolines built from the song: the leader falls, lands and bounces exactly on the beat and the winner crosses on the last beat."); }
-                else { muted(ui, "Marbles hit pads on their own beat patterns in lanes. Every hit is on the beat grid."); }
+                self.sync_style = 1;
+                muted(ui, "Every marble hits pads on its own beat pattern, wandering across the whole track and passing each other. Every hit sits on the beat grid and the winner crosses on the last beat.");
             }
             else { muted(ui, "Off: you pick the length and use Director for lead changes."); }
         });
