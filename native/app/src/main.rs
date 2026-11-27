@@ -226,7 +226,7 @@ impl App {
                 if let Some(a) = j["clones"].as_array() { for (i, v) in a.iter().enumerate().take(8) { self.clones[i] = v.as_str().map(|x| x.to_string()); } }
                 if let Some(x) = j["lyrics"].as_str() { self.lyrics = x.into(); }
                 if let Some(x) = j["auto_update"].as_bool() { self.auto_update = x; }
-                if let Some(x) = j["update_url"].as_str() { self.update_url = x.into(); }
+                if let Some(x) = j["update_url"].as_str() { self.update_url = if update::valid_source(x) { x.into() } else { String::new() }; }
                 if let Some(x) = j["ffmpeg_path"].as_str() { self.ffmpeg_path = x.into(); }
                 if let Some(x) = j["singing"].as_bool() { self.singing = x; }
                 if let Some(x) = j["sync_music"].as_bool() { self.sync_music = x; }
@@ -1034,6 +1034,7 @@ impl App {
                         ui.horizontal(|ui| {
                             if ui.add(egui::TextEdit::singleline(&mut self.update_url).hint_text(update::default_url()).desired_width(ui.available_width() - 80.0)).lost_focus() { update::set_url(Some(self.update_url.clone())); a.save = true; }
                             if ghost(ui, "Reset").clicked() { self.update_url.clear(); update::set_url(None); a.save = true; }
+                            if !self.update_url.trim().is_empty() && !update::valid_source(&self.update_url) { ui.label(egui::RichText::new("Must be a link ending in .json. It will be ignored.").color(WARN).size(12.0)); }
                         });
                     });
                 });

@@ -2,7 +2,7 @@
 use sha2::{Digest, Sha256};
 use std::io::Read;
 
-pub const VERSION: u32 = 20; // bump with every release; native.json "version" > this means an update exists
+pub const VERSION: u32 = 21; // bump with every release; native.json "version" > this means an update exists
 const DEFAULT_URL: &str = "https://assets.molive6316.com/marbeat/native.json";
 
 #[derive(Clone, Debug)]
@@ -14,7 +14,9 @@ pub struct Info {
 }
 
 static URL: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
-pub fn set_url(u: Option<String>) { *URL.lock().unwrap() = u.filter(|s| !s.trim().is_empty()); }
+/// a custom update source is only used if it really points at a .json manifest (an exe link pasted here would be read as the manifest)
+pub fn valid_source(s: &str) -> bool { let t = s.trim().split(['?', '#']).next().unwrap_or("").to_lowercase(); t.starts_with("http") && t.ends_with(".json") }
+pub fn set_url(u: Option<String>) { *URL.lock().unwrap() = u.filter(|s| valid_source(s)); }
 pub fn default_url() -> &'static str { DEFAULT_URL }
 fn manifest_url() -> String { std::env::var("MARBEAT_UPDATE_URL").ok().or_else(|| URL.lock().unwrap().clone()).unwrap_or_else(|| DEFAULT_URL.into()) }
 
