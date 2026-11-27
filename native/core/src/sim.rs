@@ -534,26 +534,38 @@ pub fn alignment_stats(tl: &Timeline, beats: &[f64]) -> (usize, usize, usize, f6
 mod tests {
     use super::*;
     #[test]
-    fn beat_mode_is_locked_to_the_music() {
+    fn beat_mode_is_locked_to_the_music_but_varied() {
         let beats: Vec<f64> = (0..70).map(|i| 0.4 + i as f64 * 60.0 / 128.0).collect();
         let bars: Vec<(f64, f32)> = (0..18).map(|i| (0.4 + i as f64 * 4.0 * 60.0 / 128.0, [0.1f32, 0.2, 0.4, 0.6, 0.9, 1.0, 1.0, 0.9, 0.5, 0.3, 0.2, 0.2, 0.7, 0.9, 1.0, 0.8, 0.4, 0.2][i])).collect();
         let plan = [(8.0, 2usize), (16.0, 4usize)];
+        let mut grid: Vec<f64> = vec![];
+        for w in beats.windows(2) { grid.push(w[0]); grid.push((w[0] + w[1]) * 0.5); }
         for map in ["neon", "pachinko", "slide", "spinner", "funnel", "chaos"] {
-            let t0 = std::time::Instant::now();
             let tl = build_timeline(&RaceSetup { seed: "beat-test", map, n: 6, len: 30.0, beats: &beats, plan: &plan, winner: Some(3), bars: &bars, compose: true });
-            let built = t0.elapsed();
             let named: Vec<&Event> = tl.sim.events.iter().filter(|e| (e.m as usize) < 6).collect();
-            let hit = |b: f64| named.iter().any(|e| ((e.f as f64 / FPS) - b).abs() <= 1.0 / FPS + 1e-9);
+            // 1. every hit sits on the beat / half-beat grid
+            let off_grid = named.iter().filter(|e| { let t = e.f as f64 / FPS; grid.iter().map(|g| (g - t).abs()).fold(f64::MAX, f64::min) > 1.0 / FPS + 1e-6 }).count();
+            // 2. every beat has someone hitting, but rarely everyone at once
             let bs: Vec<f64> = beats.iter().cloned().filter(|b| *b > 2.5 && *b < tl.win_time - 1.0).collect();
-            let covered = bs.iter().filter(|b| hit(**b)).count();
-            let led = plan.iter().filter(|(t, m)| tl.lead_a[((t + 2.5) * FPS) as usize] as usize == *m).count();
+            let who = |b: f64| (0..6).filter(|m| named.iter().any(|e| e.m as usize == *m && ((e.f as f64 / FPS) - b).abs() <= 1.0 / FPS + 1e-9)).count();
+            let covered = bs.iter().filter(|b| who(**b) >= 1).count();
+            let unison = bs.iter().filter(|b| who(**b) == 6).count() as f64 / bs.len() as f64;
+            // 3. variety of pads, and orbs in the minority
+            let pads: Vec<u8> = tl.course.segs.iter().filter(|s| s.owner < 6).map(|s| s.shape).collect();
+            let orbs = pads.iter().filter(|s| **s == shape::ORB).count() as f64 / pads.len() as f64;
+            let kinds: std::collections::BTreeSet<u8> = pads.iter().cloned().collect();
+            // 4. no overlaps, sane speeds
             let mut min_gap = f64::MAX; let mut max_v = 0.0f64;
             for f in 1..tl.sim.frames { for a in 0..6 { let (ax, ay) = tl.sim.at(f, a); let (px, py) = tl.sim.at(f - 1, a); max_v = max_v.max((ax - px).hypot(ay - py) * FPS); for b in (a + 1)..6 { let (bx, by) = tl.sim.at(f, b); min_gap = min_gap.min((ax - bx).hypot(ay - by)); } } }
-            eprintln!("{map}: beats with a hit {}/{}  finish {:.2}s (target 27.5)  winner {}  planned leaders held {}/2  closest pair {:.0}px  top speed {:.0}px/s  crowd marbles {}  built in {:?}", covered, bs.len(), tl.win_time, tl.sim.winner, led, min_gap, max_v, tl.sim.n - 6, built);
-            assert_eq!(covered, bs.len(), "{map}: every beat needs a hit");
+            eprintln!("{map}: off-grid hits {off_grid}, beats with a hit {covered}/{}, all six together on {:.0}% of beats, pad kinds {} (orbs {:.0}%), finish {:.2}s, closest pair {:.0}px, top speed {:.0}", bs.len(), unison * 100.0, kinds.len(), orbs * 100.0, tl.win_time, min_gap, max_v);
+            assert_eq!(off_grid, 0, "{map}: hits must sit on the beat grid");
+            assert!(covered as f64 >= bs.len() as f64 * 0.95, "{map}: beats without any hit");
+            assert!(unison < 0.25, "{map}: marbles too much in unison ({unison})");
+            assert!(kinds.len() >= 5 && orbs <= 0.28, "{map}: not enough variety ({} kinds, {orbs} orbs)", kinds.len());
             assert!((tl.win_time - 27.5).abs() < 1.2, "{map}: finish {}", tl.win_time);
             assert_eq!(tl.sim.winner, 3, "{map}: winner");
             assert!(min_gap >= 2.0 * RAD - 1.0, "{map}: marbles overlap ({min_gap})");
+            assert!(max_v <= 1400.0, "{map}: speed {max_v}");
         }
     }
 

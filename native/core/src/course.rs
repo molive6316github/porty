@@ -14,6 +14,8 @@ pub enum Kind {
     Bump,
 }
 
+pub mod shape { pub const ORB: u8 = 1; pub const PLANK: u8 = 2; pub const PEG: u8 = 3; pub const TRAMP: u8 = 4; pub const FLIPPER: u8 = 5; pub const DRUM: u8 = 6; pub const WALL: u8 = 7; }
+
 #[derive(Clone, Debug)]
 pub struct Seg {
     pub x1: f64,
@@ -27,6 +29,9 @@ pub struct Seg {
     pub t0: f64,
     pub vis0: f64,
     pub t1: f64,
+    /// pad look (beat mode): see `shape::*`; owner = which marble it belongs to (255 = background)
+    pub shape: u8,
+    pub owner: u8,
 }
 
 #[derive(Clone, Debug)]
@@ -132,7 +137,7 @@ pub fn build_course(hc: f64, seed: &str, map_key: &str) -> Course {
     let mut r = Rng::new(hash_seed(&format!("{seed}|course|{}", map.key)));
     let mut segs: Vec<Seg> = Vec::new();
     let mut spins: Vec<Spinner> = Vec::new();
-    let mut seg = |x1: f64, y1: f64, x2: f64, y2: f64, rr: f64, e: f64, kind: Kind| segs.push(Seg { x1, y1, x2, y2, r: rr, e, kind, t0: -1e9, vis0: -1e9, t1: 1e9 });
+    let mut seg = |x1: f64, y1: f64, x2: f64, y2: f64, rr: f64, e: f64, kind: Kind| segs.push(Seg { x1, y1, x2, y2, r: rr, e, kind, t0: -1e9, vis0: -1e9, t1: 1e9, shape: 0, owner: 255 });
     let mut y = 230.0;
     while y < hc - 150.0 {
         // choose a section type by the map's weights (chaos draws fresh weights every time, like the web version)
@@ -212,7 +217,7 @@ pub fn build_course(hc: f64, seed: &str, map_key: &str) -> Course {
     }
     let finish_y = y + 60.0;
     let floor_y = finish_y + 170.0;
-    segs.push(Seg { x1: 0.0, y1: floor_y, x2: W, y2: floor_y, r: 6.0, e: 0.2, kind: Kind::Ramp, t0: -1e9, vis0: -1e9, t1: 1e9 });
+    segs.push(Seg { x1: 0.0, y1: floor_y, x2: W, y2: floor_y, r: 6.0, e: 0.2, kind: Kind::Ramp, t0: -1e9, vis0: -1e9, t1: 1e9, shape: 0, owner: 255 });
     let nb = (floor_y / BAND).ceil() as usize + 3;
     let mut bands: Vec<Vec<u32>> = vec![Vec::new(); nb];
     for (i, s) in segs.iter().enumerate() {
@@ -229,7 +234,7 @@ impl Course {
     /// A bumper that exists only from `t0` to `t1` (sim seconds); its approach ring is drawn from `vis0`.
     pub fn add_timed_bumper(&mut self, x: f64, y: f64, r: f64, vis0: f64, t0: f64, t1: f64) {
         let i = self.segs.len() as u32;
-        self.segs.push(Seg { x1: x, y1: y, x2: x, y2: y, r, e: 1.12, kind: Kind::Bump, t0, vis0, t1 });
+        self.segs.push(Seg { x1: x, y1: y, x2: x, y2: y, r, e: 1.12, kind: Kind::Bump, t0, vis0, t1, shape: shape::ORB, owner: 255 });
         let nb = self.bands.len();
         let lo = (((y - r - PAD) / BAND).floor() as i64).max(0) as usize;
         let hi = (((y + r + PAD) / BAND).floor() as i64).min(nb as i64 - 1).max(0) as usize;

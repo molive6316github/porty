@@ -283,7 +283,8 @@ impl Renderer {
         for s in &tl.course.segs {
             if s.y1.max(s.y2) < top - 30.0 || s.y1.min(s.y2) > bot + 30.0 { continue; }
             let hue = ((pal.hb + ((s.y1 * 0.17) % pal.hs as f64) as f32) % 360.0) as f32;
-            self.seg_pro(s, hue, pulse as f32, ts, world);
+            let tint = if s.owner != 255 { sc.chars.get(s.owner as usize).map(|c| c.color) } else { None };
+            self.seg_pro(s, hue, pulse as f32, ts, tint, world);
         }
         for sp in &tl.course.spins {
             if sp.cy < top - 120.0 || sp.cy > bot + 120.0 { continue; }
@@ -461,35 +462,106 @@ impl Renderer {
         self.pm.stroke_path(&path, &paint_c(Color::from_rgba8(120, 70, 0, 204)), &Stroke { width: 1.5, ..Stroke::default() }, t, None);
     }
 
-    /// A pad composed from the music: an approach ring closes on the marble, flashes on the beat, then fades.
-    fn pad(&mut self, s: &Seg, hue: f32, ts: f64, t: Transform) {
+    /// A pad composed from the music. Each shape announces itself before the hit, reacts on the beat, then fades.
+    fn pad(&mut self, s: &Seg, tint: Option<[u8; 3]>, hue: f32, ts: f64, t: Transform) {
         if ts < s.vis0 || ts > s.t1 { return; }
-        let (x, y, r) = (s.x1 as f32, s.y1 as f32, s.r as f32);
-        let h2 = (hue + 120.0) % 360.0;
+        let pc: [f32; 3] = match tint { Some(c) => [c[0] as f32, c[1] as f32, c[2] as f32], None => hsl((hue + 120.0) % 360.0, 85.0, 62.0) };
+        let lighten = |c: [f32; 3], k: f32| [c[0] + (255.0 - c[0]) * k, c[1] + (255.0 - c[1]) * k, c[2] + (255.0 - c[2]) * k];
+        let darken = |c: [f32; 3], k: f32| [c[0] * (1.0 - k), c[1] * (1.0 - k), c[2] * (1.0 - k)];
+        let dim = if s.e < 0.6 { 0.38 } else { 1.0 }; // the crowd's pads sit in the background
         let approach = ((ts - s.vis0) / (s.t0 - s.vis0)).clamp(0.0, 1.0) as f32;
         let since = (ts - s.t0) as f32;
         let life = if since < 0.0 { 1.0 } else { (1.0 - since / (s.t1 - s.t0) as f32).clamp(0.0, 1.0) };
-        let dim = if s.e < 0.6 { 0.38 } else { 1.0 }; // the crowd's pads sit in the background
-        let a = (if since < 0.0 { 0.35 + 0.65 * approach } else { 0.25 + 0.75 * life }) * dim;
-        if since < 0.0 {
-            // the ring shrinks onto the pad exactly as the marble arrives
-            let ring = r + (1.0 - approach) * r * 2.2;
-            self.pm.stroke_path(&circle(x, y, ring), &paint_c(col(hsl(h2, 90.0, 72.0), (0.2 + 0.7 * approach) * dim)), &Stroke { width: 2.0, ..Stroke::default() }, t, None);
-        } else if since < 0.35 {
-            let k = since / 0.35;
-            self.pm.stroke_path(&circle(x, y, r + k * r * 3.0), &paint_c(col(hsl(h2, 90.0, 80.0), (1.0 - k) * 0.9 * dim)), &Stroke { width: 3.5 * (1.0 - k) + 1.0, ..Stroke::default() }, t, None);
-        }
+        let a = (if since < 0.0 { 0.3 + 0.7 * approach } else { 0.22 + 0.78 * life }) * dim;
         let flash = if since >= 0.0 && since < 0.12 { 1.0 - since / 0.12 } else { 0.0 };
-        let glow = Paint { shader: radial(x, y, r * 2.4, vec![(0.0, col(hsl(h2, 90.0, 58.0), 0.55 * a + 0.4 * flash)), (1.0, col(hsl(h2, 90.0, 58.0), 0.0))]), blend_mode: BlendMode::Plus, ..Paint::default() };
-        fill(&mut self.pm, &circle(x, y, r * 2.4), &glow, t);
-        let body = Paint { shader: RadialGradient::new(Point::from_xy(x - r * 0.3, y - r * 0.35), Point::from_xy(x, y), r,
-            vec![GradientStop::new(0.0, col(hsl(h2, 90.0, 80.0 + flash * 12.0), a)), GradientStop::new(0.6, col(hsl(h2, 85.0, 50.0 + flash * 16.0), a)), GradientStop::new(1.0, col(hsl(h2, 85.0, 30.0), a))],
-            SpreadMode::Pad, Transform::identity()).unwrap(), anti_alias: true, ..Paint::default() };
-        fill(&mut self.pm, &circle(x, y, r * (1.0 + 0.18 * flash)), &body, t);
+        let (x, y, r) = (s.x1 as f32, s.y1 as f32, s.r as f32);
+        let glow_at = |me: &mut Self, gx: f32, gy: f32, gr: f32| {
+            let g = Paint { shader: radial(gx, gy, gr, vec![(0.0, col(pc, (0.5 * a + 0.4 * flash).min(1.0))), (1.0, col(pc, 0.0))]), blend_mode: BlendMode::Plus, ..Paint::default() };
+            fill(&mut me.pm, &circle(gx, gy, gr), &g, t);
+        };
+        match s.shape {
+            shape::WALL => {
+                // a spark on the wall where the marble kicks off
+                let left = s.x1 < W / 2.0;
+                let wx = if left { 0.0 } else { W as f32 };
+                let k = if since >= 0.0 { (1.0 - since / 0.4).clamp(0.0, 1.0) } else { 0.0 };
+                if since < 0.0 {
+                    stroke_line(&mut self.pm, wx, y - 44.0, wx, y + 44.0, 4.0, col(pc, 0.15 + 0.5 * approach), t, BlendMode::SourceOver);
+                } else if k > 0.0 {
+                    stroke_line(&mut self.pm, wx, y - 60.0 * k - 10.0, wx, y + 60.0 * k + 10.0, 6.0 * k + 2.0, col(lighten(pc, 0.5), k * 0.95), t, BlendMode::SourceOver);
+                    for i in 0..7 { let ang = -1.2 + i as f32 * 0.4; let (dx, dy) = (ang.cos() * if left { 1.0 } else { -1.0 }, ang.sin()); let l0 = 6.0 + 30.0 * (1.0 - k); stroke_line(&mut self.pm, wx + dx * l0, y + dy * l0, wx + dx * (l0 + 14.0 * k), y + dy * (l0 + 14.0 * k), 2.2 * k + 0.5, col(lighten(pc, 0.7), k), t, BlendMode::SourceOver); }
+                    glow_at(self, wx + if left { 8.0 } else { -8.0 }, y, 40.0);
+                }
+            }
+            shape::PEG => {
+                if since < 0.0 { self.pm.stroke_path(&circle(x, y, r + (1.0 - approach) * 12.0), &paint_c(col(pc, 0.15 + 0.5 * approach)), &Stroke { width: 1.5, ..Stroke::default() }, t, None); }
+                glow_at(self, x, y, r * 4.0);
+                fill(&mut self.pm, &circle(x, y, r * (1.0 + 0.5 * flash)), &paint_c(col(lighten(pc, 0.35 + 0.5 * flash), a.max(0.25))), t);
+                fill(&mut self.pm, &circle(x - r * 0.3, y - r * 0.3, r * 0.35), &paint_c(Color::from_rgba8(255, 255, 255, (200.0 * a) as u8)), t);
+            }
+            shape::FLIPPER => {
+                // a paddle that swings up into the marble
+                let (px, py, tx, ty) = (s.x1 as f32, s.y1 as f32, s.x2 as f32, s.y2 as f32);
+                let swing = if since < -0.14 { -0.7 } else if since < 0.0 { -0.7 * (-since / 0.14) } else { 0.0 };
+                let (dx, dy) = (tx - px, ty - py);
+                let (c, sn) = (swing.cos(), swing.sin());
+                let tip = (px + dx * c - dy * sn, py + dx * sn + dy * c);
+                let mid = ((px + tip.0) / 2.0, (py + tip.1) / 2.0);
+                glow_at(self, mid.0, mid.1, 44.0);
+                stroke_line(&mut self.pm, px, py, mid.0, mid.1, 10.0, col(darken(pc, 0.15), a.max(0.25)), t, BlendMode::SourceOver);
+                stroke_line(&mut self.pm, mid.0, mid.1, tip.0, tip.1, 7.0, col(lighten(pc, 0.2 + 0.5 * flash), a.max(0.25)), t, BlendMode::SourceOver);
+                fill(&mut self.pm, &circle(px, py, 6.0), &paint_c(col(lighten(pc, 0.6), a.max(0.3))), t);
+            }
+            shape::ORB => {
+                if since < 0.0 {
+                    let ring = r + (1.0 - approach) * r * 2.2;
+                    self.pm.stroke_path(&circle(x, y, ring), &paint_c(col(lighten(pc, 0.3), (0.2 + 0.7 * approach) * dim)), &Stroke { width: 2.0, ..Stroke::default() }, t, None);
+                } else if since < 0.35 {
+                    let k = since / 0.35;
+                    self.pm.stroke_path(&circle(x, y, r + k * r * 3.0), &paint_c(col(lighten(pc, 0.5), (1.0 - k) * 0.9 * dim)), &Stroke { width: 3.5 * (1.0 - k) + 1.0, ..Stroke::default() }, t, None);
+                }
+                glow_at(self, x, y, r * 2.4);
+                let body = Paint { shader: RadialGradient::new(Point::from_xy(x - r * 0.3, y - r * 0.35), Point::from_xy(x, y), r,
+                    vec![GradientStop::new(0.0, col(lighten(pc, 0.55 + 0.3 * flash), a)), GradientStop::new(0.6, col(lighten(pc, 0.1 + 0.4 * flash), a)), GradientStop::new(1.0, col(darken(pc, 0.5), a))],
+                    SpreadMode::Pad, Transform::identity()).unwrap(), anti_alias: true, ..Paint::default() };
+                fill(&mut self.pm, &circle(x, y, r * (1.0 + 0.18 * flash)), &body, t);
+            }
+            _ => {
+                // plank, trampoline, drum: a bar the marble lands on
+                let (x1, y1, x2, y2) = (s.x1 as f32, s.y1 as f32, s.x2 as f32, s.y2 as f32);
+                let (mx, my) = ((x1 + x2) / 2.0, (y1 + y2) / 2.0);
+                let (lx, ly) = (x2 - x1, y2 - y1);
+                let ll = lx.hypot(ly).max(1.0);
+                let (nx, ny) = (-ly / ll, lx / ll); // bar normal
+                if since < 0.0 { stroke_line(&mut self.pm, x1, y1, x2, y2, r * 2.0 + 3.0, col(pc, 0.1 + 0.3 * approach), t, BlendMode::SourceOver); }
+                glow_at(self, mx, my, ll * 0.9);
+                if s.shape == shape::TRAMP {
+                    // the trampoline sags under the marble and springs back
+                    let k = if since >= 0.0 && since < 0.22 { (since / 0.22 * std::f32::consts::PI).sin() } else { 0.0 };
+                    let sag = 7.0 * k;
+                    let (cx, cy) = (mx + nx * sag, my + ny * sag);
+                    stroke_line(&mut self.pm, x1, y1, cx, cy, r * 2.0, col(lighten(pc, 0.15 + 0.4 * flash), a.max(0.25)), t, BlendMode::SourceOver);
+                    stroke_line(&mut self.pm, cx, cy, x2, y2, r * 2.0, col(lighten(pc, 0.15 + 0.4 * flash), a.max(0.25)), t, BlendMode::SourceOver);
+                    for q in 0..3 { let f = -0.35 + 0.35 * q as f32; let (sx, sy) = (mx + lx / ll * ll * f, my + ly / ll * ll * f); stroke_line(&mut self.pm, sx, sy, sx - nx * (9.0 - sag * 0.6), sy - ny * (9.0 - sag * 0.6), 1.6, col(darken(pc, 0.2), 0.6 * a), t, BlendMode::SourceOver); }
+                } else {
+                    stroke_line(&mut self.pm, x1, y1, x2, y2, r * 2.0, col(lighten(pc, 0.1 + 0.5 * flash), a.max(0.25)), t, BlendMode::SourceOver);
+                    stroke_line(&mut self.pm, x1 + nx * -r * 0.5, y1 + ny * -r * 0.5, x2 + nx * -r * 0.5, y2 + ny * -r * 0.5, r * 0.6, Color::from_rgba(1.0, 1.0, 1.0, 0.5 * a).unwrap(), t, BlendMode::SourceOver);
+                    if s.shape == shape::DRUM && since >= 0.0 && since < 0.4 {
+                        let k = since / 0.4;
+                        for q in 0..2 { let kk = (k - 0.15 * q as f32).max(0.0); self.pm.stroke_path(&PathBuilder::from_oval(Rect::from_xywh(mx - ll * (0.4 + kk * 0.8), my - 6.0 - kk * 8.0, ll * (0.8 + kk * 1.6), 12.0 + kk * 16.0).unwrap()).unwrap(), &paint_c(col(lighten(pc, 0.5), (1.0 - kk) * 0.8 * dim)), &Stroke { width: 2.0, ..Stroke::default() }, t, None); }
+                    } else if since >= 0.0 && since < 0.2 {
+                        // a bright sweep running along the plank
+                        let u = since / 0.2;
+                        let (sx, sy) = (x1 + lx * u, y1 + ly * u);
+                        glow_at(self, sx, sy, 18.0);
+                    }
+                }
+            }
+        }
     }
 
-    fn seg_pro(&mut self, s: &Seg, hue: f32, pulse: f32, ts: f64, t: Transform) {
-        if s.t0 > -1e8 { self.pad(s, hue, ts, t); return; }
+    fn seg_pro(&mut self, s: &Seg, hue: f32, pulse: f32, ts: f64, tint: Option<[u8; 3]>, t: Transform) {
+        if s.t0 > -1e8 { self.pad(s, tint, hue, ts, t); return; }
         let c = hsl(hue, 85.0, 62.0);
         match s.kind {
             Kind::Peg => {

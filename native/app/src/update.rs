@@ -2,7 +2,7 @@
 use sha2::{Digest, Sha256};
 use std::io::Read;
 
-pub const VERSION: u32 = 11; // bump with every release; native.json "version" > this means an update exists
+pub const VERSION: u32 = 12; // bump with every release; native.json "version" > this means an update exists
 const DEFAULT_URL: &str = "https://assets.molive6316.com/marbeat/native.json";
 
 #[derive(Clone, Debug)]
