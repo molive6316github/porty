@@ -16,6 +16,7 @@ struct Marble {
     still: i32,
     last_ev: i64,
     last_mm: i64,
+    contact: i64, // last frame this marble touched the course
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -91,7 +92,7 @@ pub fn simulate(course: &Course, n: usize, beats: &[f64], nudge_seed: u32, seed:
         let (row, col, per) = (i % 2, i / 2, (n + 1) / 2);
         let x = 70.0 + (W - 140.0) * ((col as f64 + if row == 1 { 0.5 } else { 0.0 } + r0.next() * 0.2) / (per as f64 - 0.5).max(1.0));
         let vx = (r0.next() - 0.5) * 30.0;
-        ms.push(Marble { x, y: 50.0 + row as f64 * 36.0, vx, vy: 0.0, fin: -1.0, still: 0, last_ev: -9, last_mm: -9 });
+        ms.push(Marble { x, y: 50.0 + row as f64 * 36.0, vx, vy: 0.0, fin: -1.0, still: 0, last_ev: -9, last_mm: -9, contact: -99 });
     }
     let max_f = (max_t * FPS).ceil() as usize + 1;
     let mut pos = vec![0f32; max_f * n * 2];
@@ -132,9 +133,13 @@ pub fn simulate(course: &Course, n: usize, beats: &[f64], nudge_seed: u32, seed:
             break;
         }
         while bi < beats.len() && beats[bi] <= t {
-            let k = (rn.next() * n as f64).floor() as usize;
-            ms[k].vx += (rn.next() - 0.5) * 300.0;
-            ms[k].vy -= 40.0 * rn.next();
+            // the track thumps on the beat: marbles that are touching it get popped up. Marbles in mid-air are never touched.
+            for k in 0..n {
+                if ms[k].fin < 0.0 && f as i64 - ms[k].contact <= 3 {
+                    ms[k].vy -= 105.0 + 45.0 * rn.next();
+                    ms[k].vx += (rn.next() - 0.5) * 40.0;
+                }
+            }
             bi += 1;
         }
         for s in 0..2 {
@@ -155,12 +160,15 @@ pub fn simulate(course: &Course, n: usize, beats: &[f64], nudge_seed: u32, seed:
                     }
                     if lm >= 0 && ms[d].fin < 0.0 {
                         if lm as usize != d {
+                            // never fight gravity: the marble that should lead gets a little extra downhill pull (at most 0.4 g),
+                            // the one in front gets rolling drag. Nothing is ever pushed upward, so nothing floats.
                             let gap = ly2 - ms[d].y;
-                            let k = (0.6 + gap / 70.0).clamp(0.6, 4.0);
-                            ms[d].vy += GRAV * DT * 1.1 * k;
+                            let k = (gap / 90.0).clamp(0.0, 1.0);
+                            ms[d].vy += GRAV * DT * (0.12 + 0.28 * k);
                             let lmi = lm as usize;
-                            ms[lmi].vy -= GRAV * DT * 0.9 * k.min(2.5);
-                            ms[lmi].vy *= 1.0 - 0.006 * k.min(3.0);
+                            let drag = 0.004 + 0.012 * k;
+                            ms[lmi].vy *= 1.0 - drag;
+                            ms[lmi].vx *= 1.0 - drag * 0.5;
                         } else {
                             ms[d].vy += GRAV * DT * 0.12;
                             let dy = ms[d].y;
@@ -191,6 +199,7 @@ pub fn simulate(course: &Course, n: usize, beats: &[f64], nudge_seed: u32, seed:
                     m.vx = -m.vx.abs() * 0.5;
                 }
                 let bidx = ((m.y / BAND).floor() as i64).clamp(0, course.bands.len() as i64 - 1) as usize;
+                let (cx0, cy0) = (m.x, m.y);
                 for &si in &course.bands[bidx] {
                     let sg = &course.segs[si as usize];
                     let imp = hit_seg(&mut m, sg.x1, sg.y1, sg.x2, sg.y2, sg.r, sg.e);
@@ -204,6 +213,7 @@ pub fn simulate(course: &Course, n: usize, beats: &[f64], nudge_seed: u32, seed:
                         events.push(Event { f: f as u32, kind, v: imp as f32, x: m.x as f32 });
                     }
                 }
+                if m.x != cx0 || m.y != cy0 { m.contact = f as i64; }
                 for sp2 in &course.spins {
                     if (m.y - sp2.cy).abs() < sp2.len + 30.0 {
                         let a = sp2.ph + sp2.w * st;
@@ -350,7 +360,7 @@ pub fn build_timeline(s: &RaceSetup) -> Timeline {
     if !keys.is_empty() {
         let mut factor = sim.twin / (len - 2.0).max(1.0);
         let mut best_sc: Option<(usize, Sim)> = None;
-        let tries = 16 + 6 * keys.len().min(5) as u32; // more rigged moments need more attempts to line up
+        let tries = 24 + 10 * keys.len().min(5) as u32; // more rigged moments need more attempts to line up
         for k in 0..tries {
             let sc: Vec<SchedKey> = keys.iter().map(|(t, m)| SchedKey { ts: t * factor - 2.4, m: *m }).collect();
             let s2 = simulate(&course, n, s.beats, base.wrapping_add(k.wrapping_mul(7919)), s.seed, len * 3.0, Some(&sc));
