@@ -334,6 +334,6 @@ pub fn build(cfg: &BeatCfg) -> Option<(Course, Sim, usize)> {
     segs.push(Seg { x1: 0.0, y1: floor_y, x2: W, y2: floor_y, r: 6.0, e: 0.2, kind: Kind::Ramp, t0: -1e9, vis0: -1e9, t1: 1e9, shape: 0, owner: 255, kick: 0.0, bvx: 0.0 });
     let map = &MAPS[MAPS.iter().position(|m| m.key == cfg.map).unwrap_or(0)];
     let course = Course { segs, spins: vec![], bands: vec![vec![]], finish_y, floor_y, hc: finish_y, pal: palette_for(map.key, cfg.seed), map_key: map.key };
-    let sim = Sim { n: total, frames, pos, lead, cam, twin, winner: w, fins, events, touch };
+    let sim = Sim { n: total, frames, pos, lead, cam, twin, winner: w, fins, events, touch, rank: vec![] };
     Some((course, sim, total))
 }

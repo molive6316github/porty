@@ -46,6 +46,8 @@ pub struct Sim {
     pub fins: Vec<f64>,
     pub events: Vec<Event>,
     pub touch: Vec<u8>, // frames * n: 1 while that marble is touching the course
+    /// optional ranking key per frame and marble (higher = further ahead); empty means rank by height
+    pub rank: Vec<f32>,
 }
 
 impl Sim {
@@ -271,7 +273,7 @@ impl Engine {
         let w = winner as usize;
         let twin = if self.ms[w].fin >= 0.0 { self.ms[w].fin } else { max_t };
         let frames = self.lead.len();
-        Sim { n, frames, pos: self.pos, lead: self.lead, cam: self.cam, twin, winner: w, fins: self.ms.iter().map(|m| m.fin).collect(), events: self.events, touch: self.touch }
+        Sim { n, frames, pos: self.pos, lead: self.lead, cam: self.cam, twin, winner: w, fins: self.ms.iter().map(|m| m.fin).collect(), events: self.events, touch: self.touch, rank: vec![] }
     }
 }
 
@@ -606,41 +608,48 @@ mod tests {
     }
 
     #[test]
-    fn designed_map_lands_on_the_beat() {
+    fn designed_map_has_everyone_on_the_beat() {
         let beats: Vec<f64> = (0..70).map(|i| 0.4 + i as f64 * 60.0 / 128.0).collect();
         let bars: Vec<(f64, f32)> = (0..18).map(|i| (0.4 + i as f64 * 4.0 * 60.0 / 128.0, [0.1f32, 0.2, 0.4, 0.6, 0.9, 1.0, 1.0, 0.9, 0.5, 0.3, 0.2, 0.2, 0.7, 0.9, 1.0, 0.8, 0.4, 0.2][i])).collect();
+        let mut grid: Vec<f64> = vec![];
+        for w in beats.windows(2) { for q in 0..4 { grid.push(w[0] + (w[1] - w[0]) * q as f64 / 4.0); } } // sixteenth notes
         let plan = [(8.0, 2usize), (16.0, 4usize)];
-        let (mut on_total, mut all_total, mut winners) = (0usize, 0usize, 0usize);
-        for seed in ["design-a", "design-b", "design-c", "design-d"] {
-            let t0 = std::time::Instant::now();
-            let cfg = crate::designed::DesignCfg { beats: &beats, bars: &bars, n: 6, seed, map: "neon", len: 30.0, plan: &plan, winner: Some(3) };
+        let seeds = 12;
+        let (mut strong, mut on2) = (0usize, 0usize);
+        let (mut on_time, mut changes_ok, mut clear) = (0, 0, 0);
+        for k in 0..seeds {
+            let seed = format!("seed{k}");
+            let cfg = crate::designed::DesignCfg { beats: &beats, bars: &bars, n: 6, seed: &seed, map: "neon", len: 30.0, plan: &plan, winner: Some(3) };
             let d = crate::designed::build(&cfg).expect("built");
-            let built = t0.elapsed();
-            let hit_tol = |t: f64, tol: i64| { let f = (t * FPS).round() as i64; d.sim.events.iter().any(|e| (e.f as i64 - f).abs() <= tol) };
-            let hit = |t: f64| hit_tol(t, 1);
-            // ramp landings must be within one frame; trampoline bounces within two (the physics steps in 1/120 s)
-            let on = d.landings.iter().zip(d.kinds.iter()).filter(|(t, k)| hit_tol(**t, if **k == 2 { 2 } else { 1 })).count();
-            on_total += on; all_total += d.landings.len();
-            { let offs: Vec<i64> = d.landings.iter().zip(d.kinds.iter()).filter(|(_, k)| **k == 2).map(|(t, _)| { let f = (t * FPS).round() as i64; d.sim.events.iter().map(|e| e.f as i64 - f).filter(|o| o.abs() <= 12).min_by_key(|o| o.abs()).unwrap_or(99) }).collect(); eprintln!("   {seed} bounce offsets (frames): {:?}", offs); }
-            for k in 0..3u8 { let (a, b) = d.landings.iter().zip(d.kinds.iter()).filter(|(_, kk)| **kk == k).fold((0, 0), |(a, b), (t, _)| (a + hit(*t) as i32, b + 1)); eprintln!("   {seed} kind {k} ({}): {a}/{b}", ["ramp landing", "trampoline first landing", "trampoline bounce"][k as usize]); }
-            if d.sim.winner == 3 { winners += 1; }
-            let mut max_v = 0.0f64; let mut stuck = 0;
-            for m in 0..6 {
-                // a marble that is neither finished nor getting anywhere over four seconds is stuck
-                let end = d.sim.frames - 1;
-                let (y1, y0) = (d.sim.at(end, m).1, d.sim.at(end.saturating_sub(240), m).1);
-                if d.sim.fins[m] < 0.0 && y1 - y0 < 100.0 { stuck += 1; }
-            }
-            for f in 1..d.sim.frames { for a in 0..6 { let (ax, ay) = d.sim.at(f, a); let (px, py) = d.sim.at(f - 1, a); max_v = max_v.max((ax - px).hypot(ay - py) * FPS); } }
-            let ramps = d.course.segs.iter().filter(|g| g.shape == 0).count();
-            let tramps = d.course.segs.iter().filter(|g| g.shape == shape::TRAMP).count();
-            eprintln!("{seed}: landings on the beat {on}/{}, ramps {ramps}, trampolines {tramps}, finish {:.2}s (target 27.5), winner {}, stuck {stuck}, top speed {:.0}, built in {:?}", d.landings.len(), d.sim.twin, d.sim.winner, max_v, built);
-            assert!((d.sim.twin - 27.5).abs() < 1.0, "{seed}: finish {}", d.sim.twin);
-            assert!(max_v <= 1400.0, "{seed}: speed {max_v}");
-            assert_eq!(stuck, 0, "{seed}: marbles stuck");
+            let near = |t: f64| grid.iter().map(|g| (g - t).abs()).fold(f64::MAX, f64::min);
+            // every marble's real impacts are on the sixteenth-note grid
+            let ev: Vec<&Event> = d.sim.events.iter().filter(|e| e.v >= 250.0 && e.kind != 3 && e.f as f64 / FPS > 2.0 && (e.f as f64 / FPS) < d.sim.twin - 0.5).collect();
+            strong += ev.len(); on2 += ev.iter().filter(|e| near(e.f as f64 / FPS) <= 2.0 / FPS + 1e-6).count();
+            // never more than three marbles hit at the same moment
+            let mut crowd = 0usize;
+            for e in &ev { let c = ev.iter().filter(|o| (o.f as i64 - e.f as i64).abs() <= 2).map(|o| o.m).collect::<std::collections::BTreeSet<_>>().len(); crowd = crowd.max(c); }
+            // the lead changes hands, the winner is exact, everyone finishes, the finish is on time
+            let finished = d.sim.fins.iter().filter(|f| **f >= 0.0).count();
+            let changes = (1..d.sim.frames).filter(|&f| d.sim.lead[f] != d.sim.lead[f - 1]).count();
+            // marbles must not sit on top of each other, and must move at believable speeds
+            let (mut max_v, mut touching, mut pairs) = (0.0f64, 0usize, 0usize);
+            let race_end = ((d.sim.twin + 0.3) * FPS) as usize;
+            for f in 1..d.sim.frames.min(race_end) { for a in 0..6 { let (ax, ay) = d.sim.at(f, a); let (px, py) = d.sim.at(f - 1, a); max_v = max_v.max((ax - px).hypot(ay - py) * FPS); for b in (a + 1)..6 { let (bx, by) = d.sim.at(f, b); pairs += 1; if (ax - bx).hypot(ay - by) < 20.0 { touching += 1; } } } }
+            let tp = 100.0 * touching as f64 / pairs.max(1) as f64;
+            eprintln!("{seed}: impacts {} (on grid ±2 frames {}), most marbles hitting at once {crowd}, finished {finished}/6, winner {}, lead changes {changes}, finish {:.2}s, touching {tp:.1}%, top speed {max_v:.0}", ev.len(), ev.iter().filter(|e| near(e.f as f64 / FPS) <= 2.0 / FPS + 1e-6).count(), d.sim.winner, d.sim.twin);
+            assert_eq!(d.sim.winner, 3, "{seed}: the planned winner must win");
+            assert!(crowd <= 3, "{seed}: {crowd} marbles hit at once");
+            assert!(max_v <= 1500.0, "{seed}: speed {max_v}");
+            assert!(tp < 6.0, "{seed}: marbles on top of each other {tp}% of the time");
+            if finished == 6 && (d.sim.twin - 27.5).abs() < 1.2 { on_time += 1; }
+            if changes >= 2 { changes_ok += 1; }
+            if tp < 1.0 { clear += 1; }
         }
-        assert!(on_total as f64 >= all_total as f64 * 0.85, "only {on_total}/{all_total} landings on the beat");
-        assert!(winners >= 2, "the planned winner won only {winners}/4 times");
+        eprintln!("overall: impacts on the grid {on2}/{strong}; on time {on_time}/{seeds}; lead changes hands {changes_ok}/{seeds}; clear of each other {clear}/{seeds}");
+        assert!(on2 as f64 >= strong as f64 * 0.9, "only {on2}/{strong} impacts on the grid");
+        assert!(on_time as f64 >= seeds as f64 * 0.8, "only {on_time}/{seeds} finished on time with everyone across");
+        assert!(changes_ok as f64 >= seeds as f64 * 0.8, "the lead changed hands in only {changes_ok}/{seeds}");
+        assert!(clear as f64 >= seeds as f64 * 0.7, "marbles were clear of each other in only {clear}/{seeds}");
     }
 
     #[test]

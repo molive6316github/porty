@@ -241,7 +241,7 @@ impl Renderer {
         let p: Vec<(f64, f64)> = (0..n).map(|i| { let (a, b) = (sim.at(sf0, i), sim.at(sf1, i)); (a.0 + (b.0 - a.0) * u, a.1 + (b.1 - a.1) * u) }).collect();
         let cam = sim.cam[sf0] as f64 * (1.0 - u) + sim.cam[sf1] as f64 * u;
         let ts = sf_f / FPS;
-        let score = |i: usize| if sim.fins[i] >= 0.0 && sim.fins[i] <= ts { 1e9 - sim.fins[i] } else { p[i].1 };
+        let score = |i: usize| if sim.fins[i] >= 0.0 && sim.fins[i] <= ts { 1e9 - sim.fins[i] } else if !sim.rank.is_empty() { sim.rank[sf0.min(sim.frames - 1) * n + i] as f64 } else { p[i].1 };
         let np = tl.nplayers;
         let mut order: Vec<usize> = (0..np).collect();
         order.sort_by(|&a, &b| score(b).partial_cmp(&score(a)).unwrap());

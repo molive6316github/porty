@@ -1,11 +1,13 @@
-//! Designed map mode: a real course of neon ramps and trampolines, composed from the music so the leader falls, lands, bounces and
-//! rolls exactly on the beat.
+//! Designed map mode: a real course of neon ramps and trampolines composed from the music, with every marble choreographed on it.
 //!
-//! The map is built along the leader's path. It rolls down a ramp for N beats; at that beat the ramp ends under it and it falls;
-//! the next ramp (or trampoline) is placed exactly where it will be one or two beats later, so the landing is on the beat. Trampolines
-//! launch with a speed chosen so each bounce lasts exactly one beat, and end with a gap where the marble has drifted to. Everything
-//! is static once built, so the whole map exists from the start. The rest of the field plays on the same ramps behind the leader
-//! with real physics; rolling friction (never in the air) shapes who leads.
+//! One reference marble is simulated alone. The map is built along its path so it rolls, falls, lands and bounces exactly on the
+//! beat: it rolls down a ramp for N beats, the ramp ends under it, and the next ramp (or trampoline) is placed exactly where it will
+//! be one or two beats later. Trampolines launch at a speed that makes each bounce last exactly one beat.
+//!
+//! Every marble then rides that same path, staggered by half-beats, so every landing and bounce of every marble is on the beat grid,
+//! each marble on its own subdivision. Choreography on top: marbles fan out sideways while falling and reconverge at the landing,
+//! overtakes are leapfrogs (the passing marble hops over), the start is a row of marbles released one after another, and bounce
+//! chains become canons. Who leads is decided directly, so the winner and planned leaders are exact.
 use crate::course::*;
 use crate::rng::{hash_seed, Rng};
 use crate::sim::*;
@@ -21,7 +23,7 @@ pub struct DesignCfg<'a> {
     pub winner: Option<usize>,
 }
 
-pub struct Designed { pub course: Course, pub sim: Sim, pub landings: Vec<f64>, pub heroes: Vec<usize>, pub segs: Vec<usize>, pub kinds: Vec<u8> }
+pub struct Designed { pub course: Course, pub sim: Sim, pub landings: Vec<f64>, pub kinds: Vec<u8> }
 
 fn inten(bars: &[(f64, f32)], t: f64) -> f64 {
     if bars.is_empty() { return 0.6; }
@@ -45,7 +47,6 @@ fn predict(mut x: f64, mut y: f64, mut vx: f64, mut vy: f64, frames: usize) -> (
 
 #[derive(Clone, Copy)]
 enum Module { Roll { beats: f64, fall: f64 }, Bounce { m: usize } }
-
 #[derive(Clone, Copy)]
 enum Phase { Roll { seg: usize, cut_t: f64, fall: f64 }, Bounce { last_t: f64 } }
 
@@ -54,106 +55,96 @@ fn beat_at_or_after(beats: &[f64], t: f64) -> f64 {
     beats.get(j).copied().unwrap_or(t)
 }
 
-fn choose(rng: &mut Rng, i: f64) -> Module {
+fn choose(rng: &mut Rng, i: f64, allow_bounce: bool) -> Module {
     let r = rng.next();
-    if i >= 0.62 && r < 0.5 { return Module::Bounce { m: 2 + (rng.next() * 3.0) as usize }; }
+    if allow_bounce && i >= 0.62 && r < 0.5 { return Module::Bounce { m: 2 + (rng.next() * 3.0) as usize }; }
     let beats = if i < 0.35 { 2.0 + (rng.next() * 2.0).floor() } else if i < 0.7 { 1.0 + (rng.next() * 2.0).floor() } else { 1.0 };
     let fall = if i < 0.45 { 1.0 } else if rng.next() < 0.6 { 2.0 } else { 1.0 };
     Module::Roll { beats, fall }
 }
 
-/// who should lead, and the rolling friction that makes it so (friction only acts while touching the course)
-fn apply_drag(e: &mut Engine, t: f64, cfg: &DesignCfg, _target: f64, _period: f64) {
-    // each marble rolls a little differently, and that difference drifts, so the lead changes hands now and then
-    for i in 0..cfg.n {
-        let ph = (i as f64) * 1.7;
-        e.roll_drag[i] = 0.0011 + 0.0009 * (0.5 + 0.5 * (0.55 * t + ph).sin()) + 0.0004 * (((i * 7919 + 13) % 17) as f64 / 17.0);
-    }
+fn smooth(u: f64) -> f64 { let u = u.clamp(0.0, 1.0); u * u * (3.0 - 2.0 * u) }
+
+/// a marble's delay behind the reference marble: constant, replaced in one step when it swaps places with another marble
+#[derive(Clone, Default)]
+struct Delay { start: f64, steps: Vec<(f64, f64)> } // (time the new value takes over, the value)
+impl Delay {
+    fn at(&self, t: f64) -> f64 { let mut v = self.start; for s in &self.steps { if t >= s.0 { v = s.1; } else { break; } } v }
 }
 
-/// The marbles are physically identical, so the planned winner and leaders are decided afterwards by choosing which marble's
-/// trajectory carries which name: the winner's name goes to whoever wins, and each planned leader's name to whoever leads then.
+/// two marbles exchange places by leaping over each other: `a` (the overtaker) arcs up and over while `b` slides underneath
+#[derive(Clone, Copy)]
+struct Leap { t0: f64, t1: f64, a: usize, b: usize, d_a: f64, d_b: f64 }
+
+/// The marbles are physically identical, so the planned winner and leaders are settled by choosing which marble's recording carries
+/// which name: the winner's name goes to whoever wins, and each planned leader's name to whoever leads then.
 fn relabel(sim: &mut Sim, cfg: &DesignCfg) {
     let n = cfg.n;
-    let mut label_of: Vec<Option<usize>> = vec![None; n]; // trajectory -> name
+    let mut label_of: Vec<Option<usize>> = vec![None; n];
     let mut used = vec![false; n];
     if let Some(w) = cfg.winner.filter(|w| *w < n) { label_of[sim.winner] = Some(w); used[w] = true; }
     for &(t, m) in cfg.plan {
         if m >= n || used[m] { continue; }
-        let f = (((t + 2.5) * FPS) as usize).min(sim.frames - 1);
-        let j = sim.lead[f] as usize;
+        let j = sim.lead[(((t + 3.0) * FPS) as usize).min(sim.frames - 1)] as usize;
         if label_of[j].is_none() { label_of[j] = Some(m); used[m] = true; }
     }
     let mut free: Vec<usize> = (0..n).filter(|m| !used[*m]).collect();
     let perm: Vec<usize> = (0..n).map(|j| match label_of[j] { Some(l) => l, None => free.remove(0) }).collect();
-    let (nf, old_pos, old_touch) = (sim.frames, sim.pos.clone(), sim.touch.clone());
+    let (nf, op, ot, orank) = (sim.frames, sim.pos.clone(), sim.touch.clone(), sim.rank.clone());
     for f in 0..nf { for j in 0..n { let l = perm[j];
-        sim.pos[(f * n + l) * 2] = old_pos[(f * n + j) * 2]; sim.pos[(f * n + l) * 2 + 1] = old_pos[(f * n + j) * 2 + 1];
-        sim.touch[f * n + l] = old_touch[f * n + j]; } }
+        sim.pos[(f * n + l) * 2] = op[(f * n + j) * 2]; sim.pos[(f * n + l) * 2 + 1] = op[(f * n + j) * 2 + 1];
+        sim.touch[f * n + l] = ot[f * n + j]; sim.rank[f * n + l] = orank[f * n + j]; } }
     for f in 0..nf { sim.lead[f] = perm[sim.lead[f] as usize] as u8; }
     for e in sim.events.iter_mut() { if (e.m as usize) < n { e.m = perm[e.m as usize] as u8; } }
-    let old_fins = sim.fins.clone();
-    for j in 0..n { sim.fins[perm[j]] = old_fins[j]; }
+    let of = sim.fins.clone();
+    for j in 0..n { sim.fins[perm[j]] = of[j]; }
     sim.winner = perm[sim.winner];
 }
 
 pub fn build(cfg: &DesignCfg) -> Option<Designed> {
     let n = cfg.n;
     let target = cfg.len - 2.5;
-    if cfg.beats.len() < 8 { return None; }
+    if cfg.beats.len() < 8 || n < 1 { return None; }
     let period = { let mut v: Vec<f64> = cfg.beats.windows(2).map(|w| w[1] - w[0]).collect(); v.sort_by(|a, b| a.partial_cmp(b).unwrap()); v[v.len() / 2].max(0.25) };
     let nudge = hash_seed(&format!("{}|n", cfg.seed));
     let mut rng = Rng::new(hash_seed(&format!("{}|designed|{}", cfg.seed, cfg.map)));
     let kick = 0.5 * GRAV * period * 1.05; // a bounce launched at this speed lasts exactly one beat (calibrated for the engine's step)
     let mut course = Course::blank(cfg.map, cfg.seed, 900);
-    // the opening ramp: everyone drops onto it and rolls right
     let r0 = course.add_seg(8.0, 250.0, W - 8.0, 250.0 + 0.16 * (W - 16.0), 5.0, 0.12, 0, 0.0, 0.0);
     let mut prev_dir = 1.0f64;
     let mut phase = Phase::Roll { seg: r0, cut_t: beat_at_or_after(cfg.beats, 2.4), fall: 1.0 };
     let mut landings: Vec<f64> = vec![];
-    let mut heroes: Vec<usize> = vec![];
-    let mut land_seg: Vec<usize> = vec![];
     let mut kinds: Vec<u8> = vec![]; // 0 = ramp landing, 1 = trampoline first landing, 2 = trampoline bounce
-    let mut e = Engine::new(n, nudge, cfg.seed);
-    let max_t = target + 3.6;
+    // ----- pass 1: one reference marble, composing the map along its path
+    let mut e = Engine::new(1, nudge, cfg.seed);
+    let max_t = target + 3.8;
     let max_f = (max_t * FPS) as usize + 2;
     let mut finished_planning = false;
-    let mut checks: Vec<(usize, usize, f64, f64, f64)> = vec![]; // (frame, hero, predicted x, y, land_t) for debugging
-    let mut ghost_until: (usize, f64) = (usize::MAX, -1.0); // (marble, time)
-
     while e.f < max_f {
         let t = e.time();
-        apply_drag(&mut e, t, cfg, target, period);
-        if std::env::var("MARBEAT_DEBUG_DESIGN").is_ok() { if let Some(i) = checks.iter().position(|c| c.0 == e.f) { let c = checks.remove(i); let a = e.state(c.1); eprintln!("landing {:.2}: hero {} predicted ({:.0},{:.0}) actual ({:.0},{:.0}) v=({:.0},{:.0})", c.4, c.1, c.2, c.3, a.0, a.1, a.2, a.3); } }
-        if ghost_until.0 != usize::MAX && t > ghost_until.1 { let g = ghost_until.0; e.ghost[g] = false; ghost_until = (usize::MAX, -1.0); }
-        // work out the next module when the current one is about to end
         let wake = match phase {
             Phase::Roll { seg, cut_t, .. } => {
-                let hero = (0..n).max_by(|&a, &b| e.state(a).1.partial_cmp(&e.state(b).1).unwrap()).unwrap();
-                let (x, y, _, _, _) = e.state(hero);
+                let (x, y, hvx, hvy, _) = e.state(0);
                 let g = &course.segs[seg];
                 let (dx, dy) = (g.x2 - g.x1, g.y2 - g.y1);
                 let l = dx.hypot(dy).max(1e-9);
-                let remaining = l - ((x - g.x1) * dx + (y - g.y1) * dy) / l; // distance left along the ramp
-                // at the beat, or sooner if the leader is about to run out of ramp (the landing is still placed on a beat)
-                let (_, _, hvx, hvy, _) = e.state(hero);
+                let remaining = l - ((x - g.x1) * dx + (y - g.y1) * dy) / l;
                 let downhill = (hvx * dx + hvy * dy) / l > 20.0;
-                (t >= cut_t - 1e-9 && (downhill || t >= cut_t + 0.8)) || (remaining < 34.0 && e.touching(hero))
+                // at the beat while rolling downhill, or sooner if about to run out of ramp (the landing is still on a beat)
+                (t >= cut_t - 1e-9 && (downhill || t >= cut_t + 0.8)) || (remaining < 34.0 && e.touching(0))
             }
             Phase::Bounce { last_t } => t >= last_t + 1.0 / FPS,
         };
         if wake && !finished_planning {
-            let hero = (0..n).max_by(|&a, &b| e.state(a).1.partial_cmp(&e.state(b).1).unwrap()).unwrap();
-            let (x, y, vx, vy, _) = e.state(hero);
+            let (x, y, vx, vy, _) = e.state(0);
             let (fall, land_floor);
             match phase {
                 Phase::Roll { seg, fall: f, .. } => {
-                    // the ramp ends under the leader at this beat
                     let g = &mut course.segs[seg];
                     let (dx, dy) = (g.x2 - g.x1, g.y2 - g.y1);
                     let l = dx.hypot(dy).max(1e-9);
-                    // cut a marble-and-a-bit behind the leader so it is clear of the end and drops at once, and always leave a gap to the
-                    // nearer wall that is wide enough to fall through (a marble pinned between the wall and the end cap never drops)
+                    // cut a marble-and-a-bit behind so it is clear of the end and drops at once, and always leave a gap to the nearer
+                    // wall wide enough to fall through
                     let u = ((x - g.x1) * dx + (y - g.y1) * dy) / l - (RAD + 8.0);
                     let mut u = u.clamp(10.0, l);
                     let ex = g.x1 + dx / l * u;
@@ -169,26 +160,35 @@ pub fn build(cfg: &DesignCfg) -> Option<Designed> {
             let mut land_t = beat_at_or_after(cfg.beats, (t + fall * period * 0.9).max(land_floor));
             let last = land_t >= target - 0.02;
             if last { land_t = target; }
+            else {
+                // prefer a landing beat whose spot leaves plenty of room in the direction of travel: a marble that lands next to a wall
+                // moving toward it climbs the slope, stalls and wobbles there
+                let room_at = |lt: f64| -> f64 { let fr = ((lt - t) * FPS).round().max(1.0) as usize; let (px, _, pvx, _) = predict(x, y, vx, vy, fr); if pvx > 60.0 { W - 6.0 - px } else if pvx < -60.0 { px - 6.0 } else { px.min(W - px) + 80.0 } };
+                let mut best = (room_at(land_t), land_t);
+                if best.0 < 190.0 { for k in 1..=2 { let c = beat_at_or_after(cfg.beats, land_t + 0.01 + (k as f64 - 1.0) * period) + if k == 1 { period * 0.0 } else { 0.0 }; let c = c.max(land_t + period * k as f64 * 0.99); if c < target - 0.6 { let r = room_at(c); if r > best.0 { best = (r, c); } } } }
+                land_t = beat_at_or_after(cfg.beats, best.1 - 0.01);
+                if land_t >= target - 0.02 { land_t = target; }
+            }
+            let last = land_t >= target - 0.02;
             let frames = ((land_t - t) * FPS).round().max(1.0) as usize;
             let (px, py, pvx_land, pvy_land) = predict(x, y, vx, vy, frames);
             landings.push(land_t);
-            heroes.push(hero);
             kinds.push(0);
-            checks.push(((land_t * FPS).round() as usize, hero, px, py, land_t));
-            if ghost_until.0 != usize::MAX { let g = ghost_until.0; e.ghost[g] = false; }
-            e.ghost[hero] = true; ghost_until = (hero, land_t + 0.05);
-            let module = if last { Module::Roll { beats: 99.0, fall: 1.0 } } else { choose(&mut rng, inten(cfg.bars, land_t)) };
+            // no trampoline chain in the last stretch: the race must end on a real fall
+            let allow_bounce = land_t < target - 8.0 * period;
+            let near_plan = cfg.plan.iter().any(|p| p.0 > land_t - 1.0 && p.0 < land_t + 3.5) || (cfg.winner.is_some() && land_t > target - 34.0 * period && rng.next() < 0.6);
+            let module = if last { Module::Roll { beats: 99.0, fall: 1.0 } } else if near_plan { Module::Roll { beats: 2.0, fall: 2.0 } } else { choose(&mut rng, inten(cfg.bars, land_t), allow_bounce) };
             match module {
                 Module::Roll { beats, fall } => {
                     let alpha = 0.2 + 0.14 * rng.next();
                     let pref = if pvx_land.abs() > 80.0 { pvx_land.signum() } else { -prev_dir };
-                    // pick the direction and roll length that leave room to fall without reaching a wall (a leader that hits a wall
-                    // during its planned fall bounces back onto the ramp it just left)
+                    // pick the direction and roll length that leave room to fall without reaching a wall
                     let mut chosen: Option<(f64, f64, f64)> = None; // dir, beats, alpha
                     'search: for &dir in &[pref, -pref] {
                         for &al in &[alpha, alpha * 0.7] {
                             let (c, sn) = (al.cos(), al.sin());
                             let vt = pvx_land * dir * c + pvy_land * sn;
+                            if last && vt < 60.0 { continue; } // the race ends with a roll downhill, so the finish is crossed at once
                             let acc = GRAV * sn * 0.97;
                             let room = if dir > 0.0 { W - 6.0 - px } else { px - 6.0 };
                             let mut nb = beats;
@@ -212,7 +212,6 @@ pub fn build(cfg: &DesignCfg) -> Option<Designed> {
                     let ld = if dirx > 0.0 { (W - 6.0 - sp.0) / c } else { (sp.0 - 6.0) / c }.max(60.0);
                     let seg = course.add_seg(sp.0 - tan.0 * lu, sp.1 - tan.1 * lu, sp.0 + tan.0 * ld, sp.1 + tan.1 * ld, 5.0, 0.12, 0, 0.0, 0.0);
                     prev_dir = dirx;
-                    land_seg.push(seg);
                     phase = Phase::Roll { seg, cut_t: land_t + nb * period, fall };
                 }
                 Module::Bounce { m } => {
@@ -222,10 +221,9 @@ pub fn build(cfg: &DesignCfg) -> Option<Designed> {
                     while m > 2 && (px + ds * (bv * (m - 1) as f64 * period + 10.0) > W - 30.0 || px + ds * (bv * (m - 1) as f64 * period + 10.0) < 30.0) { m -= 1; }
                     let reach = bv * (m - 1) as f64 * period + 10.0;
                     let sy = py + RAD + 5.0;
-                    let ts = course.add_seg(px - ds * 70.0, sy, px + ds * reach, sy, 5.0, 0.1, shape::TRAMP, kick, ds * bv);
-                    land_seg.push(ts);
+                    course.add_seg(px - ds * 70.0, sy, px + ds * reach, sy, 5.0, 0.1, shape::TRAMP, kick, ds * bv);
                     *kinds.last_mut().unwrap() = 1;
-                    for k in 1..m { landings.push(land_t + k as f64 * period); heroes.push(hero); kinds.push(2); }
+                    for k in 1..m { landings.push(land_t + k as f64 * period); kinds.push(2); }
                     phase = Phase::Bounce { last_t: land_t + (m - 1) as f64 * period };
                 }
             }
@@ -233,33 +231,240 @@ pub fn build(cfg: &DesignCfg) -> Option<Designed> {
         }
         if !e.step(&course, None) { break; }
     }
-    let pass1 = e.finish(max_t);
-    // the finish line sits where the leader is at the last beat, and a floor catches everyone after it
-    let frame = ((target * FPS).round() as usize).min(pass1.frames - 1);
-    let finish_y = (0..n).map(|i| pass1.at(frame, i).1).fold(f64::MIN, f64::max) - 4.0;
+    let reference = e.finish(max_t);
+    let rf = reference.frames;
+    if std::env::var("MARBEAT_DEBUG_DESIGN").is_ok() {
+        let mut f = 1; while f < rf { let sp = |k: usize| { let (a, b) = (reference.at(k - 1, 0), reference.at(k, 0)); (a.0 - b.0).hypot(a.1 - b.1) * FPS }; if sp(f) < 30.0 { let s0 = f; while f < rf && sp(f) < 30.0 { f += 1; } if f - s0 >= 8 { eprintln!("reference stalls {:.2}s-{:.2}s at ({:.0},{:.0}) touch {}", s0 as f64 / FPS, f as f64 / FPS, reference.at(s0, 0).0, reference.at(s0, 0).1, reference.touch[s0]); } } else { f += 1; } }
+    }
+    // the finish line sits just below the reference marble's last landing, and a floor catches everyone after it
+    let finish_y = reference.at(((target * FPS).round() as usize).min(rf - 1), 0).1 + 3.0;
     course.finish_y = finish_y;
     course.floor_y = finish_y + 170.0;
     course.add_seg(0.0, finish_y + 170.0, W, finish_y + 170.0, 6.0, 0.2, 0, 0.0, 0.0);
-    // finish the race from the recording itself (no second simulation): who crosses the line first, and when it all ends
-    let mut sim = pass1;
-    let nf = sim.frames;
+    let pref = |ts: f64| -> (f64, f64) {
+        let x = (ts * FPS).max(0.0);
+        let i = (x as usize).min(rf - 1);
+        let j = (i + 1).min(rf - 1);
+        let u = (x - i as f64).clamp(0.0, 1.0);
+        let (a, b) = (reference.at(i, 0), reference.at(j, 0));
+        (a.0 + (b.0 - a.0) * u, a.1 + (b.1 - a.1) * u)
+    };
+    let t_ref_end = (rf - 1) as f64 / FPS;
+
+    // ----- who is where in the line: each marble follows the reference path at its own delay, changing only in smooth windows
+    // Two copies of the path at different delays are close wherever the path is slow or revisits a spot. For any delay gap, measure the
+    // closest two copies ever come (while the race is on), and only accept gaps that keep a safe distance.
+    let self_dist = |gap: f64| -> f64 {
+        let g = (gap * FPS).round() as usize;
+        let (lo, hi) = ((0.6 * FPS) as usize, ((target + 0.05) * FPS) as usize);
+        let mut m = f64::MAX;
+        for f in lo..hi.min(rf.saturating_sub(g + 1)) { let (a, b) = (reference.at(f, 0), reference.at(f + g, 0)); m = m.min((a.0 - b.0).hypot(a.1 - b.1)); }
+        m
+    };
+    if std::env::var("MARBEAT_DEBUG_DESIGN").is_ok() {
+        for k in 1..=12 { let gap = k as f64 * 0.25 * period; let g = (gap * FPS).round() as usize; let (lo, hi) = ((1.2 * FPS) as usize, ((target + 1.0) * FPS) as usize);
+            let mut m = (f64::MAX, 0usize); for f in lo..hi.min(rf.saturating_sub(g + 1)) { let (a, b) = (reference.at(f, 0), reference.at(f + g, 0)); let d = (a.0 - b.0).hypot(a.1 - b.1); if d < m.0 { m = (d, f); } }
+            eprintln!("gap {:.2}s ({:.2} beats): closest {:.0}px at ref t={:.2}s", gap, gap / period, m.0, m.1 as f64 / FPS); }
+    }
+    // slot delays on the sixteenth-note grid, at least half a beat apart, chosen one after another so that every gap between two slots
+    // keeps the marbles clear of each other. A swap only exchanges two marbles' slots, so these gaps never change.
+    let span_limit = 2.5; // seconds the last marble may trail by
+    let slots: Vec<f64> = {
+        let mut best: Vec<f64> = vec![];
+        'margins: for &need in &[34.0f64, 30.0, 27.0, 22.0, 14.0, 0.0] {
+            let mut sl: Vec<f64> = vec![0.0];
+            for _ in 1..n {
+                let mut d = sl.last().unwrap() + 0.5 * period;
+                let mut ok = false;
+                while d <= span_limit {
+                    if sl.iter().all(|&e| self_dist(d - e) >= need) { ok = true; break; }
+                    d += 0.25 * period;
+                }
+                if !ok { continue 'margins; }
+                sl.push(d);
+            }
+            best = sl;
+            break;
+        }
+        if best.is_empty() { best = (0..n).map(|i| i as f64 * 0.75 * period).collect(); }
+        best
+    };
+    // start the line in the order the lead has to change, so every planned change is a single swap of neighbours:
+    // someone else in front, then each planned leader in turn, then the winner, then the rest
+    let mut seq: Vec<usize> = vec![];
+    for p in cfg.plan.iter().filter(|p| p.1 < n) { if !seq.contains(&p.1) { seq.push(p.1); } }
+    if let Some(w) = cfg.winner.filter(|w| *w < n) { if !seq.contains(&w) { seq.push(w); } }
+    let early = cfg.plan.iter().any(|p| p.1 < n && p.0 <= 1.0); // a plan that starts at once leads from the start
+    let mut shuffled: Vec<usize> = (0..n).collect();
+    for k in (1..n).rev() { let j = (rng.next() * (k + 1) as f64) as usize; shuffled.swap(k, j.min(k)); }
+    let mut order: Vec<usize> = vec![];
+    if !early { if let Some(x) = shuffled.iter().copied().find(|m| !seq.contains(m)) { order.push(x); } }
+    for m in &seq { order.push(*m); }
+    for m in &shuffled { if !order.contains(m) { order.push(*m); } }
+    let mut q: Vec<i32> = vec![0; n];
+    for (pos, m) in order.iter().enumerate() { q[*m] = pos as i32; }
+    let plan_at = |t: f64| -> Option<usize> {
+        if let Some(w) = cfg.winner.filter(|w| *w < n) { if t > target - 34.0 * period { return Some(w); } }
+        cfg.plan.iter().filter(|p| p.0 <= t + 1.0 && p.1 < n).last().map(|p| p.1)
+    };
+    // ----- flights of the reference marble (airborne between two contacts): marbles fan out sideways and come back together
+    let mut flights: Vec<(f64, f64)> = vec![];
+    { let mut f = 0;
+      while f < rf { if reference.touch[f] == 0 { let s = f; while f < rf && reference.touch[f] == 0 { f += 1; } if f - s >= 10 && s > 0 && f < rf { flights.push((s as f64 / FPS, f as f64 / FPS)); } } else { f += 1; } } }
+    let t_cross_ref = (((target - 0.3) * FPS) as usize..rf).find(|&f| reference.at(f, 0).1 > finish_y).map(|f| f as f64 / FPS).unwrap_or(target);
+    if std::env::var("MARBEAT_DEBUG_DESIGN").is_ok() { eprintln!("ref frames {} ({:.2}s) target {:.2} finish_y {:.0} crosses at {:.2}s; y(target) {:.0}; slots {:?}", rf, rf as f64 / FPS, target, finish_y, t_cross_ref, reference.at(((target * FPS) as usize).min(rf - 1), 0).1, slots); }
+    let first_contact = flights.first().map(|f| f.0).unwrap_or(0.8).max(0.3);
+    let gate_x = |i: usize| 70.0 + (W - 140.0) * (i as f64 + 0.5) / n as f64;
+    let start_pos = pref(0.0);
+    // per marble, per flight: how far it fans out (kept small near the walls)
+    let fan: Vec<Vec<f64>> = (0..n).map(|i| (0..flights.len()).map(|k| { let hsh = hash_seed(&format!("{}|fan|{i}|{k}", cfg.seed)); ((hsh % 1000) as f64 / 1000.0 - 0.5) * 2.0 * 24.0 }).collect()).collect();
+
+    // ----- every marble's recording, as a function of the delays and leaps (so a swap can be tried before it is accepted)
+    let ef = ((target + 3.4) * FPS) as usize + 2;
+    let record = |delays: &Vec<Delay>, leaps: &Vec<Leap>, _q: &Vec<i32>| -> (Vec<f32>, Vec<u8>, Vec<f32>) {
+        let mut pos = vec![0f32; ef * n * 2];
+        let mut touch = vec![0u8; ef * n];
+        let mut rank = vec![0f32; ef * n];
+        // where marble `i` is when it is `ts` seconds into the reference path
+        let base = |i: usize, ts: f64| -> (f64, f64) {
+            if ts <= 0.0 { return (gate_x(i), start_pos.1); }
+            let p = pref(ts.min(t_ref_end));
+            let (mut x, y) = (p.0, p.1);
+            // released from the gate row: slide across to the reference path while falling to the first ramp
+            if ts < first_contact { x += (gate_x(i) - start_pos.0) * (1.0 - ts / first_contact); }
+            // fan out in the air, back together on landing
+            if let Some(k) = flights.iter().position(|fl| ts >= fl.0 && ts <= fl.1) {
+                let u = (ts - flights[k].0) / (flights[k].1 - flights[k].0);
+                x += fan[i][k] * (std::f64::consts::PI * u).sin();
+            }
+            // after the finish they drift to their own lanes instead of bunching up
+            let post = smooth((ts - t_cross_ref) / 1.0);
+            x += (gate_x(i) - x) * post;
+            (x.clamp(RAD, W - RAD), y)
+        };
+        for f in 0..ef {
+            let t = f as f64 / FPS;
+            for i in 0..n {
+                let leap = leaps.iter().find(|lp| (lp.a == i || lp.b == i) && t >= lp.t0 && t < lp.t1);
+                let (x, y, ts, leaping);
+                if let Some(lp) = leap {
+                    let u = smooth((t - lp.t0) / (lp.t1 - lp.t0));
+                    let (d_from, d_to) = if lp.a == i { (lp.d_a, lp.d_b) } else { (lp.d_b, lp.d_a) };
+                    let (p0, p1) = (base(i, t - d_from), base(i, t - d_to));
+                    x = p0.0 + (p1.0 - p0.0) * u;
+                    y = p0.1 + (p1.1 - p0.1) * u - if lp.a == i { 46.0 * (std::f64::consts::PI * u).sin() } else { 0.0 };
+                    ts = (t - d_from) + ((t - d_to) - (t - d_from)) * u;
+                    leaping = true;
+                } else {
+                    ts = t - delays[i].at(t);
+                    let p = base(i, ts);
+                    x = p.0; y = p.1; leaping = false;
+                }
+                pos[(f * n + i) * 2] = x as f32; pos[(f * n + i) * 2 + 1] = y as f32;
+                rank[f * n + i] = ts as f32;
+                let tf = ((ts.max(0.0) * FPS).round() as usize).min(rf - 1);
+                touch[f * n + i] = if ts > 0.0 && reference.touch[tf] == 1 && !leaping { 1 } else { 0 };
+            }
+        }
+        (pos, touch, rank)
+    };
+    // closest two marbles come to each other between two frames, counting only pairs that involve marble `x` or `y`
+    let closest = |pos: &Vec<f32>, from: usize, to: usize, x: usize, y: usize| -> f64 {
+        let mut m = f64::MAX;
+        for f in from..to.min(ef) { for a in 0..n { for b in (a + 1)..n {
+            if a != x && a != y && b != x && b != y { continue; }
+            let (ax, ay, bx, by) = (pos[(f * n + a) * 2] as f64, pos[(f * n + a) * 2 + 1] as f64, pos[(f * n + b) * 2] as f64, pos[(f * n + b) * 2 + 1] as f64);
+            m = m.min((ax - bx).hypot(ay - by));
+        } } }
+        m
+    };
+    let mut delays: Vec<Delay> = (0..n).map(|i| Delay { start: slots[q[i] as usize], steps: vec![] }).collect();
+    let mut leaps: Vec<Leap> = vec![];
+    // when the reference marble hits something hard: a leap must not happen while either marble is landing
+    let ref_hits: Vec<f64> = reference.events.iter().filter(|e| e.v >= 200.0 && e.kind != 3).map(|e| e.f as f64 / FPS).collect();
+    let leap_len = 0.5;
+    let busy = |m: usize, d: f64, t0: f64, t1: f64| ref_hits.iter().any(|h| { let x = h + d; let _ = m; x > t0 - 0.07 && x < t1 + 0.07 });
+    let (mut dbg_windows, mut dbg_swaps, mut dbg_rejected) = (0, 0, 0);
+    let mut tcur = 2.6;
+    while tcur < target - 2.0 {
+        let mut swap: Option<(usize, usize)> = None;
+        if let Some(l) = plan_at(tcur) {
+            if q[l] > 0 { if let Some(b) = (0..n).find(|&b| q[b] == q[l] - 1) { swap = Some((l, b)); } }
+            else if n > 2 && rng.next() < 0.35 { let k = 1 + (rng.next() * (n as f64 - 2.0)) as i32; if let (Some(a), Some(b)) = ((0..n).find(|&a| q[a] == k), (0..n).find(|&b| q[b] == k + 1)) { swap = Some((b, a)); } }
+        } else if n > 1 && rng.next() < 0.7 {
+            let k = if rng.next() < 0.6 { 0 } else { (rng.next() * (n as f64 - 1.0)) as i32 };
+            if let (Some(a), Some(b)) = ((0..n).find(|&a| q[a] == k), (0..n).find(|&b| q[b] == k + 1)) { swap = Some((b, a)); }
+        }
+        let Some((a, b)) = swap else { tcur += 1.4; continue; };
+        // the first quiet moment in the next second and a half
+        let (da, db) = (delays[a].at(tcur), delays[b].at(tcur));
+        let mut t0 = tcur;
+        let mut found = None;
+        while t0 < tcur + 1.5 { if !busy(a, da, t0, t0 + leap_len) && !busy(b, db, t0, t0 + leap_len) { found = Some(t0); break; } t0 += 0.05; }
+        dbg_windows += 1;
+        let Some(t0) = found else { tcur += 0.9; continue; };
+        let t1 = t0 + leap_len;
+        let lp = Leap { t0, t1, a, b, d_a: da, d_b: db };
+        // try it: refuse a swap that puts these two marbles closer to another marble than they were before
+        leaps.push(lp);
+        delays[a].steps.push((t1, db)); delays[b].steps.push((t1, da));
+        let mut qt = q.clone(); qt.swap(a, b);
+        let (try_pos, _, _) = record(&delays, &leaps, &qt);
+        leaps.pop(); delays[a].steps.pop(); delays[b].steps.pop();
+        let (base_pos, _, _) = record(&delays, &leaps, &q);
+        let (f0, f1) = ((((t0 - 0.3) * FPS).max(0.0)) as usize, ((target - 0.2) * FPS) as usize);
+        let (after, before) = (closest(&try_pos, f0, f1, a, b), closest(&base_pos, f0, f1, a, b));
+        let fast = |pp: &Vec<f32>| -> f64 {
+            let mut m = 0f64;
+            for &i in &[a, b] { for f in (f0 + 1)..=((((t1 + 0.1) * FPS) as usize).min(ef - 1)) {
+                let (x0, y0) = (pp[((f - 1) * n + i) * 2] as f64, pp[((f - 1) * n + i) * 2 + 1] as f64);
+                let (x1, y1) = (pp[(f * n + i) * 2] as f64, pp[(f * n + i) * 2 + 1] as f64);
+                m = m.max(((x1 - x0).hypot(y1 - y0)) * FPS);
+            } }
+            m
+        };
+        if fast(&try_pos) > 1400f64.max(fast(&base_pos) + 40.0) { dbg_rejected += 1; tcur += 0.6; continue; }
+        if after < 16.0 && after < before - 2.0 { dbg_rejected += 1; tcur += 0.9; continue; }
+        leaps.push(lp);
+        delays[a].steps.push((t1, db)); delays[b].steps.push((t1, da));
+        q.swap(a, b);
+        dbg_swaps += 1;
+        tcur = t1 + 0.8;
+    }
+    if std::env::var("MARBEAT_DEBUG_DESIGN").is_ok() { eprintln!("leap swaps: windows found {}, made {}, refused for crowding {}", dbg_windows, dbg_swaps, dbg_rejected); }
+    let (pos, touch, rank) = record(&delays, &leaps, &q);
+    // impacts: the reference marble's, shifted by each marble's delay (so they are on the half-beat grid too)
+    let mut events: Vec<Event> = vec![];
+    for ev in &reference.events {
+        let te = ev.f as f64 / FPS;
+        for i in 0..n {
+            let mut t = te + delays[i].at(te);
+            t = te + delays[i].at(t);
+            let fr = (t * FPS).round() as usize;
+            if fr < ef { events.push(Event { seg: ev.seg, m: i as u8, f: fr as u32, kind: ev.kind, v: ev.v, x: ev.x }); }
+        }
+    }
+    events.sort_by_key(|e| e.f);
+    // finish: who crosses first, and when it all ends
+    let mut sim = Sim { n, frames: ef, pos, lead: vec![0; ef], cam: vec![0.0; ef], twin: 0.0, winner: 0, fins: vec![-1.0; n], events, touch, rank };
     let mut fins = vec![-1.0f64; n];
-    let mut win: Option<(usize, usize)> = None; // (frame, marble)
-    for f in 0..nf { for m in 0..n { if fins[m] < 0.0 && sim.at(f, m).1 > finish_y { fins[m] = f as f64 / FPS; if win.is_none() { win = Some((f, m)); } } } }
-    let (wf, w) = win.unwrap_or((nf - 1, 0));
-    let end = (wf + (3.0 * FPS) as usize + 1).min(nf);
-    sim.pos.truncate(end * n * 2); sim.touch.truncate(end * n); sim.lead.truncate(end); sim.cam.truncate(end);
+    let mut win: Option<(usize, usize)> = None;
+    for f in 0..ef { for m in 0..n { if fins[m] < 0.0 && sim.at(f, m).1 > finish_y { fins[m] = f as f64 / FPS; if win.is_none() { win = Some((f, m)); } } } }
+    let (wf, w) = win.unwrap_or((ef - 1, 0));
+    let last_cross = fins.iter().cloned().fold(0.0f64, f64::max);
+    let end = (((last_cross + 0.9) * FPS) as usize + 1).max(wf + (1.5 * FPS) as usize).min(ef);
+    sim.pos.truncate(end * n * 2); sim.touch.truncate(end * n); sim.lead.truncate(end); sim.cam.truncate(end); sim.rank.truncate(end * n);
     sim.events.retain(|e| (e.f as usize) < end);
     let mut cam_y = 300.0f64;
     for f in 0..end {
         let mut best = (f64::MIN, 0usize);
         let mut ly = f64::MIN;
-        for m in 0..n { let y = sim.at(f, m).1; ly = ly.max(y); let sc = if fins[m] >= 0.0 && fins[m] <= f as f64 / FPS { 1e9 - fins[m] } else { y }; if sc > best.0 { best = (sc, m); } }
+        for m in 0..n { let y = sim.at(f, m).1; ly = ly.max(y); let sc = if fins[m] >= 0.0 && fins[m] <= f as f64 / FPS { 1e9 - fins[m] } else { sim.rank[f * n + m] as f64 }; if sc > best.0 { best = (sc, m); } }
         sim.lead[f] = best.1 as u8;
         cam_y += (ly.min(finish_y - 80.0) - cam_y) * 0.1;
         sim.cam[f] = cam_y as f32;
     }
     sim.frames = end; sim.fins = fins; sim.winner = w; sim.twin = wf as f64 / FPS;
     relabel(&mut sim, cfg);
-    Some(Designed { course, sim, landings, heroes, segs: land_seg, kinds })
+    Some(Designed { course, sim, landings, kinds })
 }
