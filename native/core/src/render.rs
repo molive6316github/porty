@@ -27,6 +27,7 @@ pub struct Renderer {
     glow: HashMap<i32, Pixmap>,
     grain: Vec<u8>,
     frame_no: u64,
+    pub hide_hud: bool,
 }
 
 fn h01(i: f64, k: f64) -> f64 {
@@ -110,7 +111,7 @@ impl Renderer {
                 (s & 255) as u8
             })
             .collect();
-        Renderer { w, h, pm: Pixmap::new(w, h).unwrap(), bold, sprites: HashMap::new(), glow: HashMap::new(), grain, frame_no: 0 }
+        Renderer { w, h, pm: Pixmap::new(w, h).unwrap(), bold, sprites: HashMap::new(), glow: HashMap::new(), grain, frame_no: 0, hide_hud: false }
     }
 
     fn base(&self) -> Transform {
@@ -332,13 +333,58 @@ impl Renderer {
         let (sx, sy) = self.to_screen(lx, ly - RAD as f32 - 18.0, zoom, shake, off as f32 + shake_y);
         self.text(nm, sx, sy, 14.0, [255, 255, 255], 1.0, Align::Center, false);
 
-        self.hud(sc, &p, &order, leader, t, pulse);
+        if !self.hide_hud { self.hud(sc, &p, &order, leader, t, pulse); }
         self.confetti(tl.win_time, t, sc);
         self.title_card(t, sc.title);
         // vignette
         let vg = Paint { shader: radial(W as f32 / 2.0, H as f32 / 2.0, H as f32 * 0.72, vec![(0.0, Color::from_rgba8(0, 0, 0, 0)), (0.39, Color::from_rgba8(0, 0, 0, 0)), (1.0, Color::from_rgba8(0, 0, 0, 128))]), ..Paint::default() };
         self.pm.fill_rect(Rect::from_xywh(0.0, 0.0, W as f32, H as f32).unwrap(), &vg, base, None);
         if sc.pro_post { self.post(); }
+    }
+
+    /// Undertale-style dialogue box: black panel, white border, speaker portrait + name, typewriter text, blinking arrow.
+    /// `full` is the whole line (so wrapping never jumps while it types), `shown` how many characters are revealed.
+    pub fn dialogue_box(&mut self, speaker: Option<(&str, [u8; 3])>, full: &str, shown: usize, complete: bool, t: f64) {
+        let base = self.base();
+        // dim the scene behind it
+        fill(&mut self.pm, &PathBuilder::from_rect(Rect::from_xywh(0.0, 0.0, W as f32, H as f32).unwrap()), &paint_c(Color::from_rgba8(0, 0, 0, 96)), base);
+        let (bx, by, bw, bh) = (22.0f32, 716.0f32, 496.0f32, 206.0f32);
+        let b = rrect(bx, by, bw, bh, 8.0);
+        fill(&mut self.pm, &b, &paint_c(Color::from_rgba8(4, 4, 8, 238)), base);
+        self.pm.stroke_path(&b, &paint_c(Color::WHITE), &Stroke { width: 4.0, ..Stroke::default() }, base, None);
+        let mut tx = bx + 26.0;
+        if let Some((name, color)) = speaker {
+            let (cx, cy) = (bx + 66.0, by + 84.0);
+            self.draw_sprite(1, [0; 3], 0, cx, cy, 130.0, 0.55, BlendMode::Plus, base);
+            self.draw_sprite(0, color, 0, cx, cy, 84.0, 1.0, BlendMode::SourceOver, base);
+            let tw = self.text_width(name, 17.0) + 24.0;
+            fill(&mut self.pm, &rrect(bx + 18.0, by - 17.0, tw, 30.0, 15.0), &paint_c(colu(color, 1.0)), base);
+            self.text(name, bx + 30.0, by + 4.0, 17.0, [255, 255, 255], 1.0, Align::Left, true);
+            tx = bx + 128.0;
+        }
+        // word-wrap the whole line, then reveal `shown` characters of it
+        let maxw = bx + bw - 26.0 - tx;
+        let mut lines: Vec<String> = vec![String::new()];
+        for word in full.split(' ') {
+            let cur = lines.last().unwrap().clone();
+            let cand = if cur.is_empty() { word.to_string() } else { format!("{cur} {word}") };
+            if self.text_width(&cand, 24.0) > maxw && !cur.is_empty() { lines.push(word.to_string()); } else { *lines.last_mut().unwrap() = cand; }
+        }
+        let mut left = shown;
+        let mut y = by + 52.0;
+        for l in &lines {
+            let n = l.chars().count();
+            let take = left.min(n);
+            if take > 0 { let part: String = l.chars().take(take).collect(); self.text(&part, tx, y, 24.0, [255, 255, 255], 1.0, Align::Left, false); }
+            left = left.saturating_sub(n + 1);
+            y += 34.0;
+        }
+        if complete && (t * 2.2).fract() < 0.65 {
+            let (ax, ay) = (bx + bw - 34.0, by + bh - 28.0);
+            let mut pb = PathBuilder::new();
+            pb.move_to(ax - 9.0, ay - 6.0); pb.line_to(ax + 9.0, ay - 6.0); pb.line_to(ax, ay + 7.0); pb.close();
+            fill(&mut self.pm, &pb.finish().unwrap(), &paint_c(Color::WHITE), base);
+        }
     }
 
     fn to_screen(&self, x: f32, y: f32, zoom: f32, sx: f32, oy: f32) -> (f32, f32) {

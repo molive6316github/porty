@@ -9,7 +9,8 @@ use std::sync::{atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering}, Arc, Mut
 use ui::*;
 use std::time::Instant;
 use marbeat_core::audio::{load_song, Song};
-use rodio::{buffer::SamplesBuffer, OutputStream, OutputStreamHandle, Sink};
+use rodio::{buffer::SamplesBuffer, OutputStream, OutputStreamHandle, Sink, Source};
+use marbeat_core::story;
 
 const COLS: [[u8; 3]; 8] = [[255, 90, 90], [90, 200, 255], [120, 255, 140], [255, 210, 80], [200, 120, 255], [255, 150, 210], [255, 150, 60], [90, 255, 220]];
 const NAMES: [&str; 8] = ["Ruby", "Azure", "Mint", "Sunny", "Violet", "Rosie", "Amber", "Teal"];
@@ -66,7 +67,13 @@ struct App {
     toast: Option<(String, Instant)>,
     confirm_del: bool,
     confirm_reset: bool,
+    singing: bool,
+    story: Option<StoryRun>,
+    story_name: String,
+    race_title: String,
 }
+
+struct StoryRun { player: story::Player, saved_roster: Vec<([u8; 3], String)>, saved_n: usize, saved_rig: (bool, Option<usize>), blip_n: u32 }
 
 #[derive(Default)]
 struct Acts { rebuild: bool, load_path: Option<String>, toggled: bool, export: bool, save: bool, tour_next: bool, sing_go: bool, restart_audio: bool, seek: Option<f64> }
@@ -84,11 +91,12 @@ fn cfg_path() -> std::path::PathBuf {
 impl App {
     fn new() -> Self {
         let mut a = App { map: 0, seed: "42".into(), n: 6, len: 40.0, tl: None, beats: (0..2000).map(|i| i as f64 * 0.5).collect(), chars: vec![], r: Renderer::new(405, 720), tex: None, t: 0.0, playing: true, last: Instant::now(), song: None, status: "No song loaded".into(), _stream: OutputStream::try_default().ok(), sink: None, prog: Default::default(), total: Default::default(), cancel: Default::default(), exporting: Default::default(), result: Default::default(), hd: true, upd: Default::default(), upd_msg: Default::default(), upd_busy: Default::default(),
-            roster: (0..8).map(|i| (COLS[i], NAMES[i].to_string())).collect(), rig: false, plan: vec![], rig_winner: None, active: vec![], eff_seed: String::new(), tour: None, tab: 0, spk: vec![10, 25, 40, 60, 75, 90, 5, 100], clones: vec![None; 8], lyrics: String::new(), voiced: None, ai_status: Default::default(), ai_busy: Default::default(), ai_out: Default::default(), auto_update: true, update_url: String::new(), ffmpeg_path: String::new(), ff_found: Default::default(), ff_busy: Default::default(), upd_checking: Default::default(), upd_got: Default::default(), upd_total: Default::default(), toast: None, confirm_del: false, confirm_reset: false };
+            roster: (0..8).map(|i| (COLS[i], NAMES[i].to_string())).collect(), rig: false, plan: vec![], rig_winner: None, active: vec![], eff_seed: String::new(), tour: None, tab: 0, spk: vec![10, 25, 40, 60, 75, 90, 5, 100], clones: vec![None; 8], lyrics: String::new(), voiced: None, ai_status: Default::default(), ai_busy: Default::default(), ai_out: Default::default(), auto_update: true, update_url: String::new(), ffmpeg_path: String::new(), ff_found: Default::default(), ff_busy: Default::default(), upd_checking: Default::default(), upd_got: Default::default(), upd_total: Default::default(), toast: None, confirm_del: false, confirm_reset: false, singing: false, story: None, story_name: String::new(), race_title: "Marbeat".into() };
         a.load_cfg();
         update::set_url(Some(a.update_url.clone()));
         marbeat_core::export::set_ffmpeg_override(Some(a.ffmpeg_path.clone()));
         if a.auto_update { a.check_updates(); }
+        if std::env::var("MARBEAT_STORY").is_ok() { let src = include_str!("../../assets/demo.story"); a.start_story(src, "Demo"); }
         a.detect_ffmpeg();
         if let Ok(t) = std::env::var("MARBEAT_TAB") { a.tab = t.parse().unwrap_or(0); }
         update::cleanup_old();
@@ -129,6 +137,7 @@ impl App {
         let rw = if self.rig { self.rig_winner.filter(|w| *w < n) } else { None };
         let song = self.song.as_ref().map(|s| Song { sr: s.sr, mono: vec![], stereo: self.voiced.clone().unwrap_or_else(|| s.stereo.clone()), beats: vec![], bpm: s.bpm });
         let chars: Vec<(String, [u8; 3])> = self.chars.iter().map(|c| (c.name.clone(), c.color)).collect();
+        let title_s = self.race_title.clone();
         let (prog, total, cancel, busy, res) = (self.prog.clone(), self.total.clone(), self.cancel.clone(), self.exporting.clone(), self.result.clone());
         cancel.store(false, Ordering::SeqCst);
         busy.store(true, Ordering::SeqCst);
@@ -158,6 +167,7 @@ impl App {
                 if let Some(x) = j["auto_update"].as_bool() { self.auto_update = x; }
                 if let Some(x) = j["update_url"].as_str() { self.update_url = x.into(); }
                 if let Some(x) = j["ffmpeg_path"].as_str() { self.ffmpeg_path = x.into(); }
+                if let Some(x) = j["singing"].as_bool() { self.singing = x; }
                 if let Some(x) = j["hd"].as_bool() { self.hd = x; }
                 if let Some(x) = j["seed"].as_str() { self.seed = x.into(); }
                 if let Some(x) = j["n"].as_u64() { self.n = (x as usize).clamp(2, 8); }
@@ -167,7 +177,8 @@ impl App {
         self.rebuild();
     }
     fn save_cfg(&self) {
-        let j = serde_json::json!({"roster": self.roster.iter().map(|(c, n)| serde_json::json!({"name": n, "color": c})).collect::<Vec<_>>(), "auto_update": self.auto_update, "update_url": self.update_url, "ffmpeg_path": self.ffmpeg_path, "hd": self.hd, "speakers": self.spk, "clones": self.clones, "lyrics": self.lyrics, "seed": self.seed, "n": self.n, "map": self.map});
+        if self.story.is_some() { return; }
+        let j = serde_json::json!({"roster": self.roster.iter().map(|(c, n)| serde_json::json!({"name": n, "color": c})).collect::<Vec<_>>(), "auto_update": self.auto_update, "update_url": self.update_url, "ffmpeg_path": self.ffmpeg_path, "hd": self.hd, "singing": self.singing, "speakers": self.spk, "clones": self.clones, "lyrics": self.lyrics, "seed": self.seed, "n": self.n, "map": self.map});
         let _ = std::fs::write(cfg_path(), j.to_string());
     }
     fn check_updates(&self) {
@@ -199,6 +210,96 @@ impl App {
         std::thread::spawn(move || { *f.lock().unwrap() = marbeat_core::export::find_ffmpeg(); b.store(false, Ordering::SeqCst); });
     }
     fn say(&mut self, s: impl Into<String>) { self.toast = Some((s.into(), Instant::now())); }
+    fn play_blip(&mut self, idx: usize) {
+        let Some(run) = &mut self.story else { return };
+        run.blip_n = run.blip_n.wrapping_add(1);
+        let (kind, pitch) = run.player.script.chars.get(idx).map(|c| (c.blip.clone(), c.pitch)).unwrap_or(("sine".into(), 280.0));
+        let samples = story::blip(&kind, pitch, run.blip_n);
+        if let Some((_, h)) = &self._stream { let _ = h.play_raw(SamplesBuffer::new(1, 22050, samples).convert_samples()); }
+    }
+    fn story_events(&mut self, evs: Vec<story::Ev>) {
+        for e in evs {
+            match e {
+                story::Ev::Blip(i) => self.play_blip(i),
+                story::Ev::StartRace(cfg) => self.story_race(cfg),
+                story::Ev::Finished => self.stop_story(),
+            }
+        }
+    }
+    fn start_story(&mut self, src: &str, name: &str) {
+        let script = story::parse(src);
+        if script.beats.is_empty() { self.say("That script has no lines."); return; }
+        if let Some(e) = script.errors.first() { self.say(format!("Script problem: {e}")); }
+        self.stop_story();
+        let saved_roster = self.roster.clone();
+        for (i, c) in script.chars.iter().filter(|c| c.name != "Narrator").take(8).enumerate() { self.roster[i] = (c.color, c.name.clone()); }
+        let saved = (saved_roster, self.n, (self.rig, self.rig_winner));
+        self.n = script.chars.iter().filter(|c| c.name != "Narrator").count().clamp(2, 8);
+        self.tour = None; self.voiced = None; self.sink = None; self.rig = false; self.rig_winner = None;
+        self.story_name = name.to_string();
+        self.race_title = String::new();
+        self.rebuild();
+        self.playing = false;
+        let (player, evs) = story::Player::new(script);
+        self.story = Some(StoryRun { player, saved_roster: saved.0, saved_n: saved.1, saved_rig: saved.2, blip_n: 0 });
+        self.tab = 5;
+        self.story_events(evs);
+    }
+    fn stop_story(&mut self) {
+        if let Some(run) = self.story.take() {
+            self.roster = run.saved_roster; self.n = run.saved_n; self.rig = run.saved_rig.0; self.rig_winner = run.saved_rig.1;
+            self.race_title = "Marbeat".into(); self.sink = None; self.playing = false;
+            self.rebuild();
+            self.playing = false;
+        }
+    }
+    fn story_race(&mut self, cfg: story::RaceCfg) {
+        // put the named marbles first in the cast so they are the ones racing
+        let names: Vec<String> = cfg.marbles.clone();
+        if !names.is_empty() {
+            let mut order: Vec<usize> = vec![];
+            for n in &names { if let Some(i) = self.roster.iter().position(|r| &r.1 == n) { if !order.contains(&i) { order.push(i); } } }
+            let rest: Vec<usize> = (0..self.roster.len()).filter(|i| !order.contains(i)).collect();
+            let new: Vec<([u8; 3], String)> = order.iter().chain(rest.iter()).map(|&i| self.roster[i].clone()).collect();
+            let sp: Vec<i64> = order.iter().chain(rest.iter()).map(|&i| self.spk[i]).collect();
+            self.roster = new; self.spk = sp;
+            self.n = order.len().clamp(2, 8);
+        }
+        if let Some(m) = &cfg.map { if let Some(i) = MAPS.iter().position(|d| d.key == m) { self.map = i; } }
+        if let Some(sd) = &cfg.seed { self.seed = sd.clone(); }
+        if let Some(l) = cfg.len { self.len = l.clamp(10.0, 180.0); }
+        self.rig = cfg.winner.is_some();
+        self.rig_winner = cfg.winner.as_ref().and_then(|w| self.roster.iter().take(self.n).position(|r| &r.1 == w));
+        self.plan.clear();
+        self.race_title = cfg.title.clone().unwrap_or_else(|| "Marbeat".into());
+        self.sink = None;
+        self.rebuild();
+        self.playing = true;
+        if self.song.is_some() { self.start_audio(); }
+    }
+    fn story_left(&mut self, ui: &mut egui::Ui, a: &mut Acts) {
+        let _ = a;
+        card(ui, "Story", |ui| {
+            if let Some(run) = &self.story {
+                let (i, n) = run.player.progress();
+                ui.label(egui::RichText::new(self.story_name.clone()).strong());
+                ui.add(egui::ProgressBar::new(i as f32 / n.max(1) as f32).text(format!("{} / {}", i, n)).fill(ACCENT));
+                muted(ui, "Space, Enter or a click moves on. A race can't be skipped.");
+                if ghost(ui, "Stop story").clicked() { self.stop_story(); }
+            } else {
+                muted(ui, "Plays a story script: typewriter dialogue with a different text sound per character, and races as story moments.");
+                if primary(ui, "Play the demo script").clicked() { let src = include_str!("../../assets/demo.story"); self.start_story(src, "Demo"); }
+                if ghost(ui, "Open a script…").clicked() {
+                    if let Some(f) = rfd::FileDialog::new().add_filter("story script", &["story", "txt"]).pick_file() {
+                        match std::fs::read_to_string(&f) { Ok(t) => { let n = f.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or("Story".into()); self.start_story(&t, &n); } Err(e) => self.say(format!("Couldn't read that file: {e}")) }
+                    }
+                }
+            }
+        });
+        card(ui, "Script format", |ui| {
+            muted(ui, "@char Ruby color=#ff5a5a blip=square pitch=520 speed=1.0\n@race map=neon seed=ritual marbles=Ruby,Azure winner=Ruby len=40\n@wait 1.5\nRuby: Hello. {p} Ready?\n* Narration starts with a star.\n\n{p} = short pause, {winner} = last race's winner.\nBlip sounds: square, triangle, saw, sine, pulse, noise.".replace("\\n", "\n"));
+        });
+    }
     fn start_audio_at(&mut self, t: f64) { let keep = self.t; self.t = t; self.start_audio(); self.t = keep; }
     fn start_sing(&mut self) {
         let Some(song) = &self.song else { return };
@@ -389,6 +490,13 @@ impl App {
     }
 
     fn voices_left(&mut self, ui: &mut egui::Ui, a: &mut Acts) {
+        if !self.singing {
+            card(ui, "Singing is off", |ui| {
+                muted(ui, "Marbeat no longer has the marbles sing by default. You can still turn singing on if you want it.");
+                if primary(ui, "Turn singing on").clicked() { self.singing = true; a.save = true; }
+            });
+            return;
+        }
         card(ui, "Lyrics", |ui| {
             muted(ui, "One line per row. The AI listens to the song, syncs the words, and whoever is in the lead sings each line.");
             if ui.add(egui::TextEdit::multiline(&mut self.lyrics).desired_rows(12).desired_width(f32::INFINITY).hint_text("Paste lyrics here…")).changed() { a.save = true; }
@@ -474,7 +582,7 @@ impl App {
                         else { badge(ui, "Not found", BAD); }
                     });
                     if let Some(p) = &found { muted(ui, p.clone()); }
-                    else if !busy { muted(ui, "Marbeat needs ffmpeg to save MP4s. Install it, or point to it below."); }
+                    else if !busy { muted(ui, "Marbeat needs a full ffmpeg to save MP4s. Some copies bundled inside other apps are stripped down and get skipped. Install a full build (in a terminal: winget install Gyan.FFmpeg), then press Find automatically."); }
                     ui.horizontal(|ui| {
                         if ui.add_enabled(!busy, egui::Button::new("Find automatically").min_size(egui::vec2(0.0, 32.0))).clicked() {
                             self.ffmpeg_path.clear(); marbeat_core::export::set_ffmpeg_override(None); marbeat_core::export::forget_ffmpeg_cache(); self.detect_ffmpeg(); a.save = true;
@@ -482,8 +590,10 @@ impl App {
                         if ghost(ui, "Browse…").clicked() {
                             if let Some(f) = rfd::FileDialog::new().set_title("Pick ffmpeg").pick_file() {
                                 let p = f.to_string_lossy().to_string();
-                                if marbeat_core::export::ffmpeg_works(&p) { self.ffmpeg_path = p.clone(); marbeat_core::export::set_ffmpeg_override(Some(p)); self.detect_ffmpeg(); a.save = true; }
-                                else { self.say("That file didn't run as ffmpeg."); }
+                                match marbeat_core::export::ffmpeg_problem(&p) {
+                                    None => { self.ffmpeg_path = p.clone(); marbeat_core::export::set_ffmpeg_override(Some(p)); self.detect_ffmpeg(); a.save = true; }
+                                    Some(why) => self.say(format!("That ffmpeg {why}.")),
+                                }
                             }
                         }
                     });
@@ -528,6 +638,13 @@ impl App {
                 });
                 ui.add_space(10.0);
 
+                // ---- voices
+                card(ui, "Voices", |ui| {
+                    if ui.checkbox(&mut self.singing, "Let the marbles sing the lyrics (experimental)").changed() { a.save = true; }
+                    muted(ui, "Story dialogue always uses each character's own text sound. This only controls the lyric-singing feature.");
+                });
+                ui.add_space(10.0);
+
                 // ---- about
                 card(ui, "About", |ui| {
                     ui.label(egui::RichText::new("Marbeat").strong());
@@ -552,6 +669,24 @@ impl eframe::App for App {
             if self.t > end { self.t = end; self.playing = false; }
         }
         let mut a = Acts::default();
+        // ---- story clock
+        if self.story.is_some() {
+            let in_race = self.story.as_ref().unwrap().player.in_race();
+            if !in_race {
+                self.playing = false;
+                let evs = self.story.as_mut().unwrap().player.update(dt as f32);
+                self.story_events(evs);
+                let adv = ctx.input(|i| i.key_pressed(egui::Key::Space) || i.key_pressed(egui::Key::Enter) || i.key_pressed(egui::Key::Z));
+                if adv && self.tab == 5 { let evs = self.story.as_mut().unwrap().player.advance(); self.story_events(evs); }
+            } else if let Some(tl) = &self.tl {
+                if self.t >= tl.win_time + 3.0 {
+                    let w = self.chars.get(tl.sim.winner).map(|c| c.name.clone()).unwrap_or_default();
+                    self.playing = false; self.sink = None;
+                    let evs = self.story.as_mut().unwrap().player.race_finished(&w);
+                    self.story_events(evs);
+                }
+            }
+        }
 
         // ---- top bar
         egui::TopBottomPanel::top("top").exact_height(54.0).frame(egui::Frame::none().fill(BG2).inner_margin(egui::Margin::symmetric(18.0, 0.0))).show(ctx, |ui| {
@@ -561,12 +696,12 @@ impl eframe::App for App {
                 ui.painter().circle_filled(r.center() + egui::vec2(-4.0, -4.0), 3.6, egui::Color32::from_white_alpha(200));
                 ui.label(egui::RichText::new("Marbeat").size(20.0).strong());
                 ui.add_space(18.0);
-                for (i, l) in ["Studio", "Cast", "Director", "Tournament", "Voices", "Settings"].iter().enumerate() {
+                for (i, l) in ["Studio", "Cast", "Director", "Tournament", "Voices", "Story", "Settings"].iter().enumerate() {
                     if tab(ui, self.tab == i as u8, l) { self.tab = i as u8; }
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if self.upd.lock().unwrap().is_some() {
-                        if ui.add(egui::Button::new(egui::RichText::new("Update available").strong().color(egui::Color32::BLACK)).fill(WARN).rounding(16.0)).clicked() { self.tab = 5; }
+                        if ui.add(egui::Button::new(egui::RichText::new("Update available").strong().color(egui::Color32::BLACK)).fill(WARN).rounding(16.0)).clicked() { self.tab = 6; }
                     }
                     if let Some((m, t0)) = &self.toast { if t0.elapsed().as_secs() < 5 { muted(ui, m.clone()); } }
                     ui.label(egui::RichText::new(format!("v{}", update::VERSION)).color(MUTED).size(12.5));
@@ -575,23 +710,33 @@ impl eframe::App for App {
         });
 
         // ---- left panel (everything but Settings)
-        if self.tab != 5 {
+        if self.tab != 6 {
             egui::SidePanel::left("left").exact_width(318.0).frame(egui::Frame::none().fill(BG).inner_margin(egui::Margin::same(14.0))).show(ctx, |ui| {
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                    match self.tab { 1 => self.cast_left(ui, &mut a), 2 => self.rig_left(ui, &mut a), 3 => self.cup_left(ui, &mut a), 4 => self.voices_left(ui, &mut a), _ => self.studio_left(ui, &mut a) }
+                    match self.tab { 1 => self.cast_left(ui, &mut a), 2 => self.rig_left(ui, &mut a), 3 => self.cup_left(ui, &mut a), 4 => self.voices_left(ui, &mut a), 5 => self.story_left(ui, &mut a), _ => self.studio_left(ui, &mut a) }
                 });
             });
         }
 
         // ---- central
         let mut scrub_done = false;
-        if self.tab == 5 {
+        let mut click_adv = false;
+        if self.tab == 6 {
             egui::CentralPanel::default().frame(egui::Frame::none().fill(BG).inner_margin(egui::Margin::same(20.0))).show(ctx, |ui| self.settings_page(ui, &mut a));
         } else {
             // draw the frame before the panel that shows it
+            self.r.hide_hud = self.story.as_ref().map(|r| !r.player.in_race()).unwrap_or(false);
             if let Some(tl) = &self.tl {
-                let sc = Scene { tl, chars: &self.chars, beats: &self.beats, title: "Marbeat", pro_post: false };
+                let sc = Scene { tl, chars: &self.chars, beats: &self.beats, title: &self.race_title, pro_post: false };
                 self.r.draw(&sc, self.t);
+            }
+            if let Some(run) = &self.story {
+                if let Some((sp, shown, complete)) = run.player.view() {
+                    let full = run.player.full_text();
+                    let who = sp.map(|c| (c.name.as_str(), c.color));
+                    let who = who.filter(|(n, _)| *n != "Narrator");
+                    self.r.dialogue_box(who, &full, shown.chars().count(), complete, ctx.input(|i| i.time));
+                }
             }
             let img = egui::ColorImage::from_rgba_premultiplied([self.r.w as usize, self.r.h as usize], self.r.pm.data());
             match &mut self.tex { Some(t) => t.set(img, egui::TextureOptions::LINEAR), None => self.tex = Some(ctx.load_texture("frame", img, egui::TextureOptions::LINEAR)) }
@@ -603,7 +748,8 @@ impl eframe::App for App {
                 ui.allocate_ui_with_layout(egui::vec2(avail.x, ph), egui::Layout::top_down(egui::Align::Center), |ui| {
                     ui.add_space(((ph - size.y) / 2.0).max(0.0));
                     if let Some(t) = &self.tex {
-                        let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+                        let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
+                        if resp.clicked() && self.tab == 5 { click_adv = true; }
                         ui.painter().rect_filled(rect.expand(3.0), 14.0, EDGE);
                         egui::Image::new((t.id(), size)).rounding(12.0).paint_at(ui, rect);
                     }
@@ -625,6 +771,7 @@ impl eframe::App for App {
         }
 
         // ---- actions
+        if click_adv { if let Some(run) = &mut self.story { let evs = run.player.advance(); self.story_events(evs); } }
         if a.save { self.save_cfg(); }
         if a.sing_go { self.start_sing(); }
         if a.restart_audio { let t = self.t; self.start_audio_at(t); }
@@ -642,7 +789,7 @@ impl eframe::App for App {
         else if a.rebuild { self.rebuild(); }
         if scrub_done { self.start_audio(); }
         if a.toggled { if let Some(k) = &self.sink { if self.playing { k.play() } else { k.pause() } } }
-        if self.tab == 5 { ctx.request_repaint_after(std::time::Duration::from_millis(250)); } else { ctx.request_repaint(); }
+        if self.tab == 6 { ctx.request_repaint_after(std::time::Duration::from_millis(250)); } else { ctx.request_repaint(); }
     }
 }
 

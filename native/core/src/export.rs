@@ -32,19 +32,33 @@ fn scan(dir: &std::path::Path, exe: &str, depth: u32, deadline: std::time::Insta
 static OVERRIDE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 pub fn set_ffmpeg_override(p: Option<String>) { *OVERRIDE.lock().unwrap() = p.filter(|s| !s.trim().is_empty()); }
 pub fn forget_ffmpeg_cache() { let _ = std::fs::remove_file(cache_file()); }
-pub fn ffmpeg_works(p: &str) -> bool { works(p) }
+pub fn ffmpeg_works(p: &str) -> bool { usable(p) }
+fn run_list(p: &str, what: &str) -> String { Command::new(p).args(["-hide_banner", what]).output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default() }
+/// Why this ffmpeg can't be used for Marbeat exports (None = fine). Many bundled copies are stripped down.
+pub fn ffmpeg_problem(p: &str) -> Option<String> {
+    if !works(p) { return Some("doesn't run".into()); }
+    let dem = run_list(p, "-demuxers");
+    if !dem.lines().any(|l| l.contains(" rawvideo")) { return Some("can't read raw video (stripped-down build)".into()); }
+    let mux = run_list(p, "-muxers");
+    if !mux.lines().any(|l| l.split_whitespace().nth(1) == Some("mp4")) { return Some("can't write MP4".into()); }
+    let enc = run_list(p, "-encoders");
+    if !["libx264", "h264_nvenc", "libopenh264", "h264_mf", "h264_qsv", "h264_amf"].iter().any(|e| enc.contains(e)) { return Some("has no H.264 encoder".into()); }
+    if !enc.contains("aac") { return Some("has no AAC encoder".into()); }
+    None
+}
+fn usable(p: &str) -> bool { ffmpeg_problem(p).is_none() }
 /// Looks for ffmpeg everywhere sensible on this machine and remembers what it found.
 pub fn find_ffmpeg() -> Option<String> {
     let exe = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
-    if let Some(p) = OVERRIDE.lock().unwrap().clone() { if works(&p) { return Some(p); } }
-    if let Ok(t) = std::fs::read_to_string(cache_file()) { let t = t.trim(); if !t.is_empty() && std::path::Path::new(t).exists() && works(t) { return Some(t.into()); } }
+    if let Some(p) = OVERRIDE.lock().unwrap().clone() { if usable(&p) { return Some(p); } }
+    if let Ok(t) = std::fs::read_to_string(cache_file()) { let t = t.trim(); if !t.is_empty() && std::path::Path::new(t).exists() && usable(t) { return Some(t.into()); } }
     let remember = |p: &str| { let f = cache_file(); if let Some(d) = f.parent() { let _ = std::fs::create_dir_all(d); } let _ = std::fs::write(f, p); p.to_string() };
-    if let Ok(p) = std::env::var("MARBEAT_FFMPEG") { if works(&p) { return Some(remember(&p)); } }
+    if let Ok(p) = std::env::var("MARBEAT_FFMPEG") { if usable(&p) { return Some(remember(&p)); } }
     let mut quick: Vec<std::path::PathBuf> = vec![];
     if let Ok(p) = std::env::current_exe() { if let Some(d) = p.parent() { quick.push(d.join(exe)); quick.push(d.join("bin").join(exe)); } }
     if let Ok(d) = std::env::var("LOCALAPPDATA") { quick.push(std::path::Path::new(&d).join("Marbeat").join(exe)); }
-    for p in quick { if p.exists() && works(&p.to_string_lossy()) { return Some(remember(&p.to_string_lossy())); } }
-    if works(exe) { return Some(exe.into()); } // on PATH
+    for p in quick { if p.exists() && usable(&p.to_string_lossy()) { return Some(remember(&p.to_string_lossy())); } }
+    if usable(exe) { return Some(exe.into()); } // on PATH
     // common install spots, then a bounded scan of the machine
     let mut roots: Vec<std::path::PathBuf> = vec![];
     if cfg!(windows) {
@@ -58,7 +72,7 @@ pub fn find_ffmpeg() -> Option<String> {
     for r in roots {
         let mut found = vec![];
         scan(&r, exe, if r.parent().is_none() { 4 } else { 6 }, deadline, &mut found);
-        for p in found { let s = p.to_string_lossy().to_string(); if works(&s) { return Some(remember(&s)); } }
+        for p in found { let s = p.to_string_lossy().to_string(); if usable(&s) { return Some(remember(&s)); } }
     }
     None
 }
