@@ -17,6 +17,7 @@ pub struct BeatCfg<'a> {
     pub len: f64,
     pub plan: &'a [(f64, usize)],
     pub winner: Option<usize>,
+    pub crowd: usize,
 }
 
 pub const CROWD_MAX: usize = 4;
@@ -41,9 +42,19 @@ const PATTERNS: [&[f64]; 8] = [
 
 /// Give every marble a different groove in this bar (shuffled from a set that suits the intensity) so they play against each other.
 fn assign_patterns(rng: &mut Rng, i: f64, count: usize) -> Vec<usize> {
-    let mut set: Vec<usize> = if i < 0.3 { vec![1, 5, 0, 2, 5, 1, 2, 0] } else if i < 0.7 { vec![0, 2, 4, 6, 5, 7, 2, 4] } else { vec![3, 4, 6, 0, 7, 2, 4, 6] };
-    for k in (1..set.len()).rev() { let j = (rng.next() * (k + 1) as f64) as usize; set.swap(k, j.min(k)); }
-    (0..count).map(|m| set[m % set.len()]).collect()
+    // a budget of busy marbles per bar: calm music is mostly half-time and backbeat, loud music lets a few play four-hit patterns,
+    // and only the loudest lets one marble play eighth notes. Everyone else keeps a slower groove, so there is always contrast.
+    let (busy_budget, eighth_budget) = if i < 0.3 { (0, 0) } else if i < 0.7 { (2, 0) } else if i < 0.88 { (3, 0) } else { (3, 1) };
+    let mut busy: Vec<usize> = vec![0, 2, 4, 6, 7]; // four-hit patterns
+    let mut slow: Vec<usize> = vec![1, 5, 1, 5, 1]; // two-hit patterns
+    for v in [&mut busy, &mut slow] { for k in (1..v.len()).rev() { let j = (rng.next() * (k + 1) as f64) as usize; v.swap(k, j.min(k)); } }
+    let mut who: Vec<usize> = (0..count).collect();
+    for k in (1..who.len()).rev() { let j = (rng.next() * (k + 1) as f64) as usize; who.swap(k, j.min(k)); }
+    let mut out = vec![1usize; count];
+    for (rank, m) in who.iter().enumerate() {
+        out[*m] = if rank < eighth_budget { 3 } else if rank < eighth_budget + busy_budget { busy[rank % busy.len()] } else { slow[rank % slow.len()] };
+    }
+    out
 }
 
 #[derive(Clone, Default)]
@@ -116,6 +127,7 @@ pub fn build(cfg: &BeatCfg) -> Option<(Course, Sim, usize)> {
     let lead_depth = |t: f64| (0..n).map(|i| depth(i, t)).fold(f64::MIN, f64::max);
 
     // ----- each marble's own groove, bar by bar
+    let ncrowd = cfg.crowd.min(CROWD_MAX);
     let assign: Vec<Vec<usize>> = bar_list.iter().map(|b| assign_patterns(&mut rng, b.2, n + CROWD_MAX)).collect();
     let station_times = |who: usize, allow_double: bool| -> Vec<f64> {
         let mut times: Vec<f64> = vec![];
@@ -163,7 +175,7 @@ pub fn build(cfg: &BeatCfg) -> Option<(Course, Sim, usize)> {
     }
     // crowd: appears while the music is intense enough, sliding in from above and out again
     let mut crowd_present = vec![false; CROWD_MAX];
-    for j in 0..CROWD_MAX {
+    for j in 0..ncrowd {
         let thr = 0.52 + 0.1 * j as f64;
         let times = station_times(n + j, false);
         let lane = 50.0 + (W - 100.0) * (j as f64 + 1.0) / (CROWD_MAX as f64 + 1.0);
@@ -282,8 +294,40 @@ pub fn build(cfg: &BeatCfg) -> Option<(Course, Sim, usize)> {
                     (Kind::Ramp, th, (cx - tx * half, cy - ty * half), (cx + tx * half, cy + ty * half))
                 }
             };
-            segs.push(Seg { x1: p1.0, y1: p1.1, x2: p2.0, y2: p2.1, r, e, kind, t0: c.t[k], vis0: c.t[k] - 0.35, t1: c.t[k] + 1.1, shape: shp, owner });
+            segs.push(Seg { x1: p1.0, y1: p1.1, x2: p2.0, y2: p2.1, r, e, kind, t0: c.t[k], vis0: -1e9, t1: 1e9, shape: shp, owner });
             events.push(Event { m: m as u8, f: (c.t[k] * fps).round() as u32, kind: if shp == shape::WALL { 2 } else { 1 }, v: dl as f32, x: px as f32 });
+        }
+    }
+    // decoration: pegs and small planks that fill the gaps so the whole thing reads as one map. They never touch a marble:
+    // every candidate is checked against every position any marble ever occupies.
+    {
+        let mut pts: Vec<(f32, f32)> = vec![];
+        for f in (0..frames).step_by(2) { for m in 0..total { if m < n || crowd_present.get(m - n).copied().unwrap_or(false) { pts.push((pos[(f * total + m) * 2], pos[(f * total + m) * 2 + 1])); } } }
+        let pads: Vec<(f64, f64)> = segs.iter().map(|g| ((g.x1 + g.x2) / 2.0, (g.y1 + g.y2) / 2.0)).collect();
+        let mut grid: std::collections::HashMap<(i32, i32), Vec<(f32, f32)>> = Default::default();
+        for p in &pts { grid.entry(((p.0 / 40.0) as i32, (p.1 / 40.0) as i32)).or_default().push(*p); }
+        let clear = |x: f64, y: f64, rad: f64| -> bool {
+            let (gx, gy) = ((x / 40.0) as i32, (y / 40.0) as i32);
+            let reach = ((rad / 40.0).ceil() as i32) + 1;
+            for dx in -reach..=reach { for dy in -reach..=reach { if let Some(v) = grid.get(&(gx + dx, gy + dy)) { for p in v { if ((p.0 as f64 - x).powi(2) + (p.1 as f64 - y).powi(2)).sqrt() < rad { return false; } } } } }
+            !pads.iter().any(|p| (p.0 - x).hypot(p.1 - y) < 46.0)
+        };
+        let mut y = 160.0;
+        let mut placed = 0;
+        while y < finish_y + 120.0 && placed < 1100 {
+            for _ in 0..9 {
+                let x = 28.0 + rng.next() * (W - 56.0);
+                let yy = y + rng.next() * 70.0;
+                let peg = rng.next() < 0.55;
+                if peg {
+                    if clear(x, yy, RAD + 5.0 + 9.0) { segs.push(Seg { x1: x, y1: yy, x2: x, y2: yy, r: 5.0, e: 0.9, kind: Kind::Peg, t0: 1e9, vis0: -1e9, t1: 1e9, shape: shape::PEG, owner: 255 }); placed += 1; }
+                } else {
+                    let ang = (rng.next() - 0.5) * 1.1;
+                    let (dx, dy) = (ang.cos() * 24.0, ang.sin() * 24.0);
+                    if clear(x, yy, RAD + 3.0 + 24.0 + 6.0) { segs.push(Seg { x1: x - dx, y1: yy - dy, x2: x + dx, y2: yy + dy, r: 3.0, e: 0.9, kind: Kind::Ramp, t0: 1e9, vis0: -1e9, t1: 1e9, shape: shape::PLANK, owner: 255 }); placed += 1; }
+                }
+            }
+            y += 40.0;
         }
     }
     events.sort_by_key(|e| e.f);

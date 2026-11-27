@@ -412,11 +412,12 @@ pub struct RaceSetup<'a> {
     /// (bar start, intensity 0..1) from the music, and whether to compose the course from the beats
     pub bars: &'a [(f64, f32)],
     pub compose: bool,
+    pub crowd: usize,
 }
 
 pub fn build_timeline(s: &RaceSetup) -> Timeline {
     if s.compose && s.beats.len() > 8 {
-        let cfg = crate::beatmode::BeatCfg { beats: s.beats, bars: s.bars, n: s.n, seed: s.seed, map: s.map, len: s.len, plan: s.plan, winner: s.winner };
+        let cfg = crate::beatmode::BeatCfg { beats: s.beats, bars: s.bars, n: s.n, seed: s.seed, map: s.map, len: s.len, plan: s.plan, winner: s.winner, crowd: s.crowd };
         if let Some((course, sim, total)) = crate::beatmode::build(&cfg) {
             let frames = (s.len * FPS).ceil() as usize;
             let lead_a: Vec<u8> = (0..=frames).map(|f| sim.lead[f.min(sim.frames - 1)]).collect();
@@ -541,7 +542,7 @@ mod tests {
         let mut grid: Vec<f64> = vec![];
         for w in beats.windows(2) { grid.push(w[0]); grid.push((w[0] + w[1]) * 0.5); }
         for map in ["neon", "pachinko", "slide", "spinner", "funnel", "chaos"] {
-            let tl = build_timeline(&RaceSetup { seed: "beat-test", map, n: 6, len: 30.0, beats: &beats, plan: &plan, winner: Some(3), bars: &bars, compose: true });
+            let tl = build_timeline(&RaceSetup { seed: "beat-test", map, n: 6, len: 30.0, beats: &beats, plan: &plan, winner: Some(3), bars: &bars, compose: true, crowd: 0 });
             let named: Vec<&Event> = tl.sim.events.iter().filter(|e| (e.m as usize) < 6).collect();
             // 1. every hit sits on the beat / half-beat grid
             let off_grid = named.iter().filter(|e| { let t = e.f as f64 / FPS; grid.iter().map(|g| (g - t).abs()).fold(f64::MAX, f64::min) > 1.0 / FPS + 1e-6 }).count();
@@ -557,6 +558,20 @@ mod tests {
             // 4. no overlaps, sane speeds
             let mut min_gap = f64::MAX; let mut max_v = 0.0f64;
             for f in 1..tl.sim.frames { for a in 0..6 { let (ax, ay) = tl.sim.at(f, a); let (px, py) = tl.sim.at(f - 1, a); max_v = max_v.max((ax - px).hypot(ay - py) * FPS); for b in (a + 1)..6 { let (bx, by) = tl.sim.at(f, b); min_gap = min_gap.min((ax - bx).hypot(ay - by)); } } }
+            // 5. not crowded: pads belonging to marbles that are on screen at the same time
+            let mut seen = 0.0; let mut samples = 0.0;
+            for f in (60..tl.sim.frames).step_by(30) { let cam = tl.sim.cam[f] as f64; seen += tl.course.segs.iter().filter(|g| g.owner < 6 && g.y1 > cam - 400.0 && g.y1 < cam + 560.0).count() as f64; samples += 1.0; }
+            let visible_pads = seen / samples;
+            // 6. a full map: decoration exists and never touches a marble
+            let decor: Vec<&Seg> = tl.course.segs.iter().filter(|g| g.t0 > 1e8).collect();
+            let mut worst = f64::MAX;
+            for g in &decor { for f in (0..tl.sim.frames).step_by(2) { for m in 0..6 { let (px, py) = tl.sim.at(f, m);
+                let (dx, dy) = (g.x2 - g.x1, g.y2 - g.y1); let l2 = dx * dx + dy * dy; let u = if l2 > 0.0 { (((px - g.x1) * dx + (py - g.y1) * dy) / l2).clamp(0.0, 1.0) } else { 0.0 };
+                worst = worst.min((px - (g.x1 + dx * u)).hypot(py - (g.y1 + dy * u)) - g.r); } } }
+            eprintln!("{map}: pads in view {:.1}, decoration {} pieces, closest marble to any decoration {:.0}px", visible_pads, decor.len(), worst);
+            assert!(visible_pads <= 18.0, "{map}: too crowded ({visible_pads})");
+            assert!(decor.len() >= 120, "{map}: not enough map ({})", decor.len());
+            assert!(worst >= RAD - 0.5, "{map}: a marble passes through scenery ({worst})");
             eprintln!("{map}: off-grid hits {off_grid}, beats with a hit {covered}/{}, all six together on {:.0}% of beats, pad kinds {} (orbs {:.0}%), finish {:.2}s, closest pair {:.0}px, top speed {:.0}", bs.len(), unison * 100.0, kinds.len(), orbs * 100.0, tl.win_time, min_gap, max_v);
             assert_eq!(off_grid, 0, "{map}: hits must sit on the beat grid");
             assert!(covered as f64 >= bs.len() as f64 * 0.95, "{map}: beats without any hit");
@@ -573,7 +588,7 @@ mod tests {
     fn warp_puts_impacts_on_the_beat() {
         let beats: Vec<f64> = (0..70).map(|i| 0.4 + i as f64 * 60.0 / 128.0).collect();
         for map in ["neon", "pachinko", "slide", "spinner", "funnel", "chaos"] {
-            let tl = build_timeline(&RaceSetup { seed: "sync-test", map, n: 6, len: 30.0, beats: &beats, plan: &[], winner: None, bars: &[], compose: false });
+            let tl = build_timeline(&RaceSetup { seed: "sync-test", map, n: 6, len: 30.0, beats: &beats, plan: &[], winner: None, bars: &[], compose: false, crowd: 0 });
             let (n, before, after, lo, hi) = alignment_stats(&tl, &beats);
             let (cb, ca) = beat_coverage(&tl, &beats);
             eprintln!("{map}: beats with a hit on them {:.0}% -> {:.0}%", cb * 100.0, ca * 100.0);
