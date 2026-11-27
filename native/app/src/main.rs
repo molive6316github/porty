@@ -258,7 +258,7 @@ impl App {
             match update::check() {
                 Ok(Some(i)) => { *m.lock().unwrap() = format!("Version {} is available", i.version); *u.lock().unwrap() = Some(i); }
                 Ok(None) => { *u.lock().unwrap() = None; *m.lock().unwrap() = format!("You're up to date (v{})", update::VERSION); }
-                Err(_) => *m.lock().unwrap() = "Couldn't reach the update server. Are you online?".into(),
+                Err(e) => *m.lock().unwrap() = format!("Couldn't check for updates: {e}"),
             }
             c.store(false, Ordering::SeqCst);
         });

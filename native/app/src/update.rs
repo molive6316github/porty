@@ -2,7 +2,7 @@
 use sha2::{Digest, Sha256};
 use std::io::Read;
 
-pub const VERSION: u32 = 18; // bump with every release; native.json "version" > this means an update exists
+pub const VERSION: u32 = 19; // bump with every release; native.json "version" > this means an update exists
 const DEFAULT_URL: &str = "https://assets.molive6316.com/marbeat/native.json";
 
 #[derive(Clone, Debug)]
@@ -18,9 +18,25 @@ pub fn set_url(u: Option<String>) { *URL.lock().unwrap() = u.filter(|s| !s.trim(
 pub fn default_url() -> &'static str { DEFAULT_URL }
 fn manifest_url() -> String { std::env::var("MARBEAT_UPDATE_URL").ok().or_else(|| URL.lock().unwrap().clone()).unwrap_or_else(|| DEFAULT_URL.into()) }
 
+/// a short human reason for a failed request (the user can read it in Settings and tell me)
+pub fn explain(e: &ureq::Error) -> String {
+    match e {
+        ureq::Error::Status(code, _) => format!("the server answered {code}"),
+        ureq::Error::Transport(t) => {
+            let m = t.to_string().to_lowercase();
+            let why = if m.contains("certificate") || m.contains("tls") || m.contains("handshake") { "the network's security certificate wasn't trusted" }
+                else if m.contains("dns") || m.contains("resolve") || m.contains("lookup") { "the address couldn't be looked up (DNS or offline)" }
+                else if m.contains("timed out") || m.contains("timeout") { "the connection timed out" }
+                else if m.contains("refused") || m.contains("reset") || m.contains("forbidden") || m.contains("403") { "the network blocked the connection" }
+                else { "the connection failed" };
+            format!("{why} ({t})")
+        }
+    }
+}
+
 pub fn check() -> Result<Option<Info>, String> {
     let agent = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(15)).build();
-    let body = agent.get(&manifest_url()).call().map_err(|e| e.to_string())?.into_string().map_err(|e| e.to_string())?;
+    let body = agent.get(&manifest_url()).call().map_err(|e| explain(&e))?.into_string().map_err(|e| e.to_string())?;
     let j: serde_json::Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
     let version = j["version"].as_u64().ok_or("bad manifest")? as u32;
     if version <= VERSION { return Ok(None); }
@@ -34,7 +50,7 @@ pub fn check() -> Result<Option<Info>, String> {
 pub fn install(info: &Info, progress: impl Fn(u64, u64)) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let new = exe.with_extension("new");
-    let resp = ureq::AgentBuilder::new().timeout_connect(std::time::Duration::from_secs(15)).build().get(&info.url).call().map_err(|e| e.to_string())?;
+    let resp = ureq::AgentBuilder::new().timeout_connect(std::time::Duration::from_secs(15)).build().get(&info.url).call().map_err(|e| explain(&e))?;
     let total: u64 = resp.header("Content-Length").and_then(|s| s.parse().ok()).unwrap_or(0);
     let mut r = resp.into_reader();
     let mut f = std::fs::File::create(&new).map_err(|e| e.to_string())?;
