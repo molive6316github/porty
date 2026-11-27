@@ -1,4 +1,5 @@
 mod ai;
+mod tools;
 mod ui;
 mod update;
 use eframe::egui;
@@ -67,6 +68,10 @@ struct App {
     toast: Option<(String, Instant)>,
     confirm_del: bool,
     confirm_reset: bool,
+    ff_dl: Arc<AtomicBool>,
+    ff_got: Arc<AtomicU64>,
+    ff_total: Arc<AtomicU64>,
+    ff_msg: Arc<Mutex<String>>,
     singing: bool,
     story: Option<StoryRun>,
     story_name: String,
@@ -91,7 +96,7 @@ fn cfg_path() -> std::path::PathBuf {
 impl App {
     fn new() -> Self {
         let mut a = App { map: 0, seed: "42".into(), n: 6, len: 40.0, tl: None, beats: (0..2000).map(|i| i as f64 * 0.5).collect(), chars: vec![], r: Renderer::new(405, 720), tex: None, t: 0.0, playing: true, last: Instant::now(), song: None, status: "No song loaded".into(), _stream: OutputStream::try_default().ok(), sink: None, prog: Default::default(), total: Default::default(), cancel: Default::default(), exporting: Default::default(), result: Default::default(), hd: true, upd: Default::default(), upd_msg: Default::default(), upd_busy: Default::default(),
-            roster: (0..8).map(|i| (COLS[i], NAMES[i].to_string())).collect(), rig: false, plan: vec![], rig_winner: None, active: vec![], eff_seed: String::new(), tour: None, tab: 0, spk: vec![10, 25, 40, 60, 75, 90, 5, 100], clones: vec![None; 8], lyrics: String::new(), voiced: None, ai_status: Default::default(), ai_busy: Default::default(), ai_out: Default::default(), auto_update: true, update_url: String::new(), ffmpeg_path: String::new(), ff_found: Default::default(), ff_busy: Default::default(), upd_checking: Default::default(), upd_got: Default::default(), upd_total: Default::default(), toast: None, confirm_del: false, confirm_reset: false, singing: false, story: None, story_name: String::new(), race_title: "Marbeat".into() };
+            roster: (0..8).map(|i| (COLS[i], NAMES[i].to_string())).collect(), rig: false, plan: vec![], rig_winner: None, active: vec![], eff_seed: String::new(), tour: None, tab: 0, spk: vec![10, 25, 40, 60, 75, 90, 5, 100], clones: vec![None; 8], lyrics: String::new(), voiced: None, ai_status: Default::default(), ai_busy: Default::default(), ai_out: Default::default(), auto_update: true, update_url: String::new(), ffmpeg_path: String::new(), ff_found: Default::default(), ff_busy: Default::default(), upd_checking: Default::default(), upd_got: Default::default(), upd_total: Default::default(), toast: None, confirm_del: false, confirm_reset: false, ff_dl: Default::default(), ff_got: Default::default(), ff_total: Default::default(), ff_msg: Default::default(), singing: false, story: None, story_name: String::new(), race_title: "Marbeat".into() };
         a.load_cfg();
         update::set_url(Some(a.update_url.clone()));
         marbeat_core::export::set_ffmpeg_override(Some(a.ffmpeg_path.clone()));
@@ -208,6 +213,27 @@ impl App {
         let (f, b) = (self.ff_found.clone(), self.ff_busy.clone());
         b.store(true, Ordering::SeqCst);
         std::thread::spawn(move || { *f.lock().unwrap() = marbeat_core::export::find_ffmpeg(); b.store(false, Ordering::SeqCst); });
+    }
+    fn download_ffmpeg(&self) {
+        let (b, g, t, m, f) = (self.ff_dl.clone(), self.ff_got.clone(), self.ff_total.clone(), self.ff_msg.clone(), self.ff_found.clone());
+        let fb = self.ff_busy.clone();
+        b.store(true, Ordering::SeqCst);
+        *m.lock().unwrap() = "Downloading ffmpeg…".into();
+        std::thread::spawn(move || {
+            match tools::get_ffmpeg(|got, total| { g.store(got, Ordering::Relaxed); t.store(total, Ordering::Relaxed); }) {
+                Ok(p) => {
+                    marbeat_core::export::forget_ffmpeg_cache();
+                    let ps = p.to_string_lossy().to_string();
+                    match marbeat_core::export::ffmpeg_problem(&ps) {
+                        None => { marbeat_core::export::set_ffmpeg_override(Some(ps.clone())); *f.lock().unwrap() = Some(ps); *m.lock().unwrap() = "ffmpeg is installed and ready.".into(); }
+                        Some(why) => *m.lock().unwrap() = format!("Downloaded, but it {why}."),
+                    }
+                }
+                Err(e) => *m.lock().unwrap() = format!("Couldn't get ffmpeg: {e}"),
+            }
+            let _ = &fb;
+            b.store(false, Ordering::SeqCst);
+        });
     }
     fn say(&mut self, s: impl Into<String>) { self.toast = Some((s.into(), Instant::now())); }
     fn play_blip(&mut self, idx: usize) {
@@ -417,7 +443,7 @@ impl App {
                 if ghost(ui, "Cancel").clicked() { self.cancel.store(true, Ordering::SeqCst); }
             } else {
                 if primary(ui, "Render MP4…").clicked() { a.export = true; }
-                if self.ff_found.lock().unwrap().is_none() && !self.ff_busy.load(Ordering::Relaxed) { ui.label(egui::RichText::new("ffmpeg not found. Fix it in Settings.").color(WARN).size(12.5)); }
+                if self.ff_found.lock().unwrap().is_none() && !self.ff_busy.load(Ordering::Relaxed) { { ui.label(egui::RichText::new("No usable ffmpeg yet.").color(WARN).size(12.5)); if ghost(ui, "Fix in Settings").clicked() { self.tab = 6; } } }
             }
             if let Some(m) = self.result.lock().unwrap().clone() { muted(ui, m); }
         });
@@ -582,7 +608,15 @@ impl App {
                         else { badge(ui, "Not found", BAD); }
                     });
                     if let Some(p) = &found { muted(ui, p.clone()); }
-                    else if !busy { muted(ui, "Marbeat needs a full ffmpeg to save MP4s. Some copies bundled inside other apps are stripped down and get skipped. Install a full build (in a terminal: winget install Gyan.FFmpeg), then press Find automatically."); }
+                    if found.is_none() && !busy { let log = marbeat_core::export::ffmpeg_log(); if !log.is_empty() { ui.collapsing("What Marbeat found and skipped", |ui| { for l in log { muted(ui, l); } }); } }
+                    else if !busy { muted(ui, "Marbeat needs a full ffmpeg to save MP4s. Some copies bundled inside other apps are stripped down and get skipped. Press “Get ffmpeg for me” and Marbeat will download and set one up."); }
+                    if self.ff_dl.load(Ordering::Relaxed) {
+                        let (g, t) = (self.ff_got.load(Ordering::Relaxed), self.ff_total.load(Ordering::Relaxed).max(1));
+                        ui.add(egui::ProgressBar::new(g as f32 / t as f32).text(format!("Downloading {} / {}", mb(g), mb(t))).fill(ACCENT));
+                    } else if found.is_none() && !busy {
+                        if primary(ui, &format!("Get ffmpeg for me ({})", tools::SIZE_LABEL)).clicked() { self.download_ffmpeg(); }
+                    } else if !busy && ghost(ui, &format!("Download a full ffmpeg ({})", tools::SIZE_LABEL)).clicked() { self.download_ffmpeg(); }
+                    { let m = self.ff_msg.lock().unwrap().clone(); if !m.is_empty() { muted(ui, m); } }
                     ui.horizontal(|ui| {
                         if ui.add_enabled(!busy, egui::Button::new("Find automatically").min_size(egui::vec2(0.0, 32.0))).clicked() {
                             self.ffmpeg_path.clear(); marbeat_core::export::set_ffmpeg_override(None); marbeat_core::export::forget_ffmpeg_cache(); self.detect_ffmpeg(); a.save = true;
@@ -808,6 +842,10 @@ fn main() -> eframe::Result {
             Ok(o) => { eprintln!("ok {} lines, {} words heard, {:?}", o.lines, o.heard, t0.elapsed()); let mut f = std::fs::File::create(&args[i + 3]).unwrap(); let n = o.mixed.len(); use std::io::Write; f.write_all(b"RIFF").unwrap(); f.write_all(&(36 + n as u32 * 2).to_le_bytes()).unwrap(); f.write_all(b"WAVEfmt ").unwrap(); f.write_all(&16u32.to_le_bytes()).unwrap(); f.write_all(&1u16.to_le_bytes()).unwrap(); f.write_all(&2u16.to_le_bytes()).unwrap(); f.write_all(&song.sr.to_le_bytes()).unwrap(); f.write_all(&(song.sr * 4).to_le_bytes()).unwrap(); f.write_all(&4u16.to_le_bytes()).unwrap(); f.write_all(&16u16.to_le_bytes()).unwrap(); f.write_all(b"data").unwrap(); f.write_all(&(n as u32 * 2).to_le_bytes()).unwrap(); for v in o.mixed { f.write_all(&((v.clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes()).unwrap(); } }
             Err(e) => { eprintln!("FAILED: {e}"); std::process::exit(1); }
         }
+        return Ok(());
+    }
+    if args.iter().any(|a| a == "--get-ffmpeg") {
+        match tools::get_ffmpeg(|g, t| { if g % (1 << 22) < (1 << 17) { eprintln!("{g}/{t}"); } }) { Ok(p) => { println!("installed {}", p.display()); println!("problem: {:?}", marbeat_core::export::ffmpeg_problem(&p.to_string_lossy())); } Err(e) => { eprintln!("FAILED: {e}"); std::process::exit(1); } }
         return Ok(());
     }
     if args.iter().any(|a| a == "--self-update") {

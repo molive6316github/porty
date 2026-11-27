@@ -29,6 +29,59 @@ fn scan(dir: &std::path::Path, exe: &str, depth: u32, deadline: std::time::Insta
     subs.sort_by_key(|p| { let l = p.to_string_lossy().to_lowercase(); if l.contains("ffmpeg") || l.ends_with("bin") { 0 } else { 1 } });
     for s in subs { scan(&s, exe, depth - 1, deadline, out); }
 }
+/// Where installers put ffmpeg: winget, Chocolatey, Scoop, and the usual folders. Checked directly (no slow scan).
+pub fn known_locations(env: &dyn Fn(&str) -> Option<String>, exe: &str) -> Vec<std::path::PathBuf> {
+    use std::path::PathBuf;
+    let mut v: Vec<PathBuf> = vec![];
+    if let Some(l) = env("LOCALAPPDATA") {
+        let wg = PathBuf::from(&l).join("Microsoft").join("WinGet");
+        v.push(wg.join("Links").join(exe));
+        // winget's real files: Packages/<Id>_<hash>/<build folder>/bin/ffmpeg.exe
+        if let Ok(rd) = std::fs::read_dir(wg.join("Packages")) {
+            for e in rd.flatten() {
+                if e.file_name().to_string_lossy().to_lowercase().contains("ffmpeg") {
+                    let mut found = vec![];
+                    scan(&e.path(), exe, 5, std::time::Instant::now() + std::time::Duration::from_secs(3), &mut found);
+                    v.extend(found);
+                }
+            }
+        }
+    }
+    if let Some(h) = env("USERPROFILE").or_else(|| env("HOME")) {
+        let h = PathBuf::from(h);
+        v.push(h.join("scoop").join("shims").join(exe));
+        v.push(h.join("scoop").join("apps").join("ffmpeg").join("current").join("bin").join(exe));
+        v.push(h.join("ffmpeg").join("bin").join(exe));
+    }
+    if let Some(d) = env("ProgramData") { v.push(PathBuf::from(&d).join("chocolatey").join("bin").join(exe)); v.push(PathBuf::from(d).join("chocolatey").join("lib").join("ffmpeg").join("tools").join("ffmpeg").join("bin").join(exe)); }
+    for pf in ["ProgramFiles", "ProgramFiles(x86)"] {
+        if let Some(d) = env(pf) { if let Ok(rd) = std::fs::read_dir(&d) { for e in rd.flatten() { if e.file_name().to_string_lossy().to_lowercase().contains("ffmpeg") { v.push(e.path().join("bin").join(exe)); v.push(e.path().join(exe)); } } } }
+    }
+    v.push(PathBuf::from("C:\\ffmpeg\\bin").join(exe));
+    v
+}
+/// The PATH Windows would give a freshly started program (an already-open Marbeat has a stale copy of it).
+#[cfg(windows)]
+fn fresh_path_dirs() -> Vec<std::path::PathBuf> {
+    let mut out = vec![];
+    for key in ["HKCU\\Environment", "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment"] {
+        if let Ok(o) = Command::new("reg").args(["query", key, "/v", "Path"]).output() {
+            let t = String::from_utf8_lossy(&o.stdout).to_string();
+            if let Some(line) = t.lines().find(|l| l.trim_start().starts_with("Path")) {
+                let val = line.splitn(3, "    ").nth(2).unwrap_or("").trim().to_string();
+                for part in val.split(';').filter(|p| !p.is_empty()) {
+                    let mut p = part.to_string();
+                    while let (Some(a), Some(b)) = (p.find('%'), p.rfind('%')) { if a == b { break; } let name = p[a + 1..].split('%').next().unwrap_or("").to_string(); let rep = std::env::var(&name).unwrap_or_default(); p = format!("{}{}{}", &p[..a], rep, &p[a + name.len() + 2..]); }
+                    out.push(p.into());
+                }
+            }
+        }
+    }
+    out
+}
+#[cfg(not(windows))]
+fn fresh_path_dirs() -> Vec<std::path::PathBuf> { vec![] }
+
 static OVERRIDE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 pub fn set_ffmpeg_override(p: Option<String>) { *OVERRIDE.lock().unwrap() = p.filter(|s| !s.trim().is_empty()); }
 pub fn forget_ffmpeg_cache() { let _ = std::fs::remove_file(cache_file()); }
@@ -46,10 +99,19 @@ pub fn ffmpeg_problem(p: &str) -> Option<String> {
     if !enc.contains("aac") { return Some("has no AAC encoder".into()); }
     None
 }
-fn usable(p: &str) -> bool { ffmpeg_problem(p).is_none() }
+static LOG: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+/// What the last search found and why copies were rejected.
+pub fn ffmpeg_log() -> Vec<String> { LOG.lock().unwrap().clone() }
+fn usable(p: &str) -> bool {
+    match ffmpeg_problem(p) {
+        None => true,
+        Some(why) => { let mut l = LOG.lock().unwrap(); let line = format!("{p}: {why}"); if !l.contains(&line) { l.push(line); } false }
+    }
+}
 /// Looks for ffmpeg everywhere sensible on this machine and remembers what it found.
 pub fn find_ffmpeg() -> Option<String> {
     let exe = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
+    LOG.lock().unwrap().clear();
     if let Some(p) = OVERRIDE.lock().unwrap().clone() { if usable(&p) { return Some(p); } }
     if let Ok(t) = std::fs::read_to_string(cache_file()) { let t = t.trim(); if !t.is_empty() && std::path::Path::new(t).exists() && usable(t) { return Some(t.into()); } }
     let remember = |p: &str| { let f = cache_file(); if let Some(d) = f.parent() { let _ = std::fs::create_dir_all(d); } let _ = std::fs::write(f, p); p.to_string() };
@@ -59,17 +121,19 @@ pub fn find_ffmpeg() -> Option<String> {
     if let Ok(d) = std::env::var("LOCALAPPDATA") { quick.push(std::path::Path::new(&d).join("Marbeat").join(exe)); }
     for p in quick { if p.exists() && usable(&p.to_string_lossy()) { return Some(remember(&p.to_string_lossy())); } }
     if usable(exe) { return Some(exe.into()); } // on PATH
+    for p in known_locations(&|k| std::env::var(k).ok(), exe) { if p.exists() && usable(&p.to_string_lossy()) { return Some(remember(&p.to_string_lossy())); } }
+    for d in fresh_path_dirs() { let p = d.join(exe); if p.exists() && usable(&p.to_string_lossy()) { return Some(remember(&p.to_string_lossy())); } }
     // common install spots, then a bounded scan of the machine
     let mut roots: Vec<std::path::PathBuf> = vec![];
     if cfg!(windows) {
-        for v in ["ProgramFiles", "ProgramFiles(x86)", "ProgramData", "LOCALAPPDATA", "APPDATA", "USERPROFILE"] { if let Ok(d) = std::env::var(v) { roots.push(d.into()); } }
+        for v in ["USERPROFILE", "LOCALAPPDATA", "APPDATA", "ProgramData", "ProgramFiles", "ProgramFiles(x86)"] { if let Ok(d) = std::env::var(v) { roots.push(d.into()); } }
         for d in b'C'..=b'H' { roots.push(format!("{}:\\", d as char).into()); }
     } else {
         for d in ["/usr/local/bin", "/opt", "/snap", "/usr/bin"] { roots.push(d.into()); }
         if let Ok(h) = std::env::var("HOME") { roots.push(h.into()); }
     }
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(25);
     for r in roots {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
         let mut found = vec![];
         scan(&r, exe, if r.parent().is_none() { 4 } else { 6 }, deadline, &mut found);
         for p in found { let s = p.to_string_lossy().to_string(); if usable(&s) { return Some(remember(&s)); } }
@@ -122,4 +186,20 @@ pub fn export_mp4(sc: &Scene, song: Option<&Song>, out: &str, scale: u32, mut pr
     if !ok { let _ = std::fs::remove_file(out); return Err("cancelled".into()); }
     if !o.status.success() { return Err(String::from_utf8_lossy(&o.stderr).to_string()); }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn finds_winget_layout() {
+        let root = std::env::temp_dir().join(format!("mbff{}", std::process::id()));
+        let bin = root.join("Microsoft/WinGet/Packages/Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe/ffmpeg-7.1.1-full_build/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("ffmpeg"), "x").unwrap();
+        let r = root.to_string_lossy().to_string();
+        let got = known_locations(&|k| if k == "LOCALAPPDATA" { Some(r.clone()) } else { None }, "ffmpeg");
+        assert!(got.iter().any(|p| p.exists() && p.ends_with("bin/ffmpeg")), "{got:?}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
