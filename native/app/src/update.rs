@@ -2,7 +2,7 @@
 use sha2::{Digest, Sha256};
 use std::io::Read;
 
-pub const VERSION: u32 = 19; // bump with every release; native.json "version" > this means an update exists
+pub const VERSION: u32 = 20; // bump with every release; native.json "version" > this means an update exists
 const DEFAULT_URL: &str = "https://assets.molive6316.com/marbeat/native.json";
 
 #[derive(Clone, Debug)]
@@ -36,8 +36,19 @@ pub fn explain(e: &ureq::Error) -> String {
 
 pub fn check() -> Result<Option<Info>, String> {
     let agent = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(15)).build();
-    let body = agent.get(&manifest_url()).call().map_err(|e| explain(&e))?.into_string().map_err(|e| e.to_string())?;
-    let j: serde_json::Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
+    let resp = agent.get(&manifest_url()).call().map_err(|e| explain(&e))?;
+    let (ctype, clen, final_url) = (resp.header("Content-Type").unwrap_or("?").to_string(), resp.header("Content-Length").unwrap_or("?").to_string(), resp.get_url().to_string());
+    // the manifest is tiny: read a little, and if it isn't the manifest say what came back instead
+    let mut raw = Vec::new();
+    std::io::Read::read_to_end(&mut std::io::Read::take(resp.into_reader(), 64 * 1024), &mut raw).map_err(|e| e.to_string())?;
+    let body = String::from_utf8_lossy(&raw).to_string();
+    let j: serde_json::Value = match serde_json::from_str(&body) {
+        Ok(j) => j,
+        Err(_) => {
+            let peek: String = body.chars().filter(|c| !c.is_control()).take(100).collect();
+            return Err(format!("the server sent something that isn't the update file (type {ctype}, size {clen}, from {final_url}): \"{peek}\""));
+        }
+    };
     let version = j["version"].as_u64().ok_or("bad manifest")? as u32;
     if version <= VERSION { return Ok(None); }
     let base = manifest_url();
