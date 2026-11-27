@@ -581,6 +581,17 @@ impl Renderer {
 
     fn seg_pro(&mut self, s: &Seg, hue: f32, pulse: f32, ts: f64, tint: Option<[u8; 3]>, t: Transform) {
         if s.t0 > -1e8 { self.pad(s, tint, hue, pulse, ts, t); return; }
+        if s.shape == shape::TRAMP {
+            // a trampoline: a wide springy bar in a warm colour, with little springs underneath
+            let (x1, y1, x2, y2) = (s.x1 as f32, s.y1 as f32, s.x2 as f32, s.y2 as f32);
+            let tc = hsl((hue + 70.0) % 360.0, 95.0, 62.0 + pulse * 10.0);
+            stroke_line(&mut self.pm, x1, y1, x2, y2, 22.0, col(tc, 0.22), t, BlendMode::SourceOver);
+            stroke_line(&mut self.pm, x1, y1, x2, y2, 10.0, col(tc, 1.0), t, BlendMode::SourceOver);
+            stroke_line(&mut self.pm, x1, y1 - 2.5, x2, y2 - 2.5, 3.0, Color::from_rgba(1.0, 1.0, 1.0, 0.6 + pulse * 0.3).unwrap(), t, BlendMode::SourceOver);
+            let n = (((x2 - x1).abs() / 14.0) as i32).max(3);
+            for k in 0..=n { let u = k as f32 / n as f32; let (sx, sy) = (x1 + (x2 - x1) * u, y1 + (y2 - y1) * u); stroke_line(&mut self.pm, sx, sy + 7.0, sx, sy + 15.0, 2.0, col(darken_c(tc, 0.3), 0.8), t, BlendMode::SourceOver); }
+            return;
+        }
         let c = hsl(hue, 85.0, 62.0);
         match s.kind {
             Kind::Peg => {
@@ -800,6 +811,8 @@ impl Renderer {
         } }
     }
 }
+
+fn darken_c(c: [f32; 3], k: f32) -> [f32; 3] { [c[0] * (1.0 - k), c[1] * (1.0 - k), c[2] * (1.0 - k)] }
 
 fn box_blur(src: &[f32], w: usize, h: usize, r: usize) -> Vec<f32> {
     let mut tmp = vec![0f32; src.len()];

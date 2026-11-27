@@ -74,6 +74,7 @@ struct App {
     ff_msg: Arc<Mutex<String>>,
     singing: bool,
     crowd: bool,
+    sync_style: u8, // 0 = designed map, 1 = lane pads
     sync_music: bool,
     av_offset_ms: i32,
     show_lyrics: bool,
@@ -116,7 +117,7 @@ fn cfg_path() -> std::path::PathBuf {
 impl App {
     fn new() -> Self {
         let mut a = App { map: 0, seed: "42".into(), n: 6, len: 40.0, tl: None, beats: (0..2000).map(|i| i as f64 * 0.5).collect(), chars: vec![], r: Renderer::new(405, 720), tex: None, t: 0.0, playing: true, last: Instant::now(), song: None, status: "No song loaded".into(), _stream: OutputStream::try_default().ok(), sink: None, prog: Default::default(), total: Default::default(), cancel: Default::default(), exporting: Default::default(), result: Default::default(), hd: true, upd: Default::default(), upd_msg: Default::default(), upd_busy: Default::default(),
-            roster: (0..8).map(|i| (COLS[i], NAMES[i].to_string())).collect(), rig: false, plan: vec![], rig_winner: None, active: vec![], eff_seed: String::new(), tour: None, tab: 0, spk: vec![10, 25, 40, 60, 75, 90, 5, 100], clones: vec![None; 8], lyrics: String::new(), voiced: None, ai_status: Default::default(), ai_busy: Default::default(), ai_out: Default::default(), auto_update: true, update_url: String::new(), ffmpeg_path: String::new(), ff_found: Default::default(), ff_busy: Default::default(), upd_checking: Default::default(), upd_got: Default::default(), upd_total: Default::default(), toast: None, confirm_del: false, confirm_reset: false, ff_dl: Default::default(), ff_got: Default::default(), ff_total: Default::default(), ff_msg: Default::default(), singing: false, crowd: false, sync_music: true, av_offset_ms: 0, show_lyrics: true, song_path: String::new(), lyric_lines: vec![], lyr_draft: None, lyr_paste: String::new(), lyr_busy: Default::default(), lyr_status: Default::default(), lyr_out: Default::default(), cur_plan: vec![], cur_winner: None, cur_len: 40.0, cur_bars: vec![], cur_compose: false, story: None, story_name: String::new(), race_title: "Marbeat".into() };
+            roster: (0..8).map(|i| (COLS[i], NAMES[i].to_string())).collect(), rig: false, plan: vec![], rig_winner: None, active: vec![], eff_seed: String::new(), tour: None, tab: 0, spk: vec![10, 25, 40, 60, 75, 90, 5, 100], clones: vec![None; 8], lyrics: String::new(), voiced: None, ai_status: Default::default(), ai_busy: Default::default(), ai_out: Default::default(), auto_update: true, update_url: String::new(), ffmpeg_path: String::new(), ff_found: Default::default(), ff_busy: Default::default(), upd_checking: Default::default(), upd_got: Default::default(), upd_total: Default::default(), toast: None, confirm_del: false, confirm_reset: false, ff_dl: Default::default(), ff_got: Default::default(), ff_total: Default::default(), ff_msg: Default::default(), singing: false, crowd: false, sync_style: 0, sync_music: true, av_offset_ms: 0, show_lyrics: true, song_path: String::new(), lyric_lines: vec![], lyr_draft: None, lyr_paste: String::new(), lyr_busy: Default::default(), lyr_status: Default::default(), lyr_out: Default::default(), cur_plan: vec![], cur_winner: None, cur_len: 40.0, cur_bars: vec![], cur_compose: false, story: None, story_name: String::new(), race_title: "Marbeat".into() };
         a.load_cfg();
         update::set_url(Some(a.update_url.clone()));
         marbeat_core::export::set_ffmpeg_override(Some(a.ffmpeg_path.clone()));
@@ -167,6 +168,7 @@ impl App {
         let lyr = if self.show_lyrics { self.lyric_lines.clone() } else { vec![] };
         let (bars_s, compose) = (self.cur_bars.clone(), self.cur_compose);
         let crowd_n = if self.crowd { 3 } else { 0 };
+        let sync_style = self.sync_style;
         let song = self.song.as_ref().map(|s| Song { sr: s.sr, mono: vec![], stereo: self.voiced.clone().unwrap_or_else(|| s.stereo.clone()), beats: vec![], bpm: s.bpm });
         let chars: Vec<(String, [u8; 3])> = self.chars.iter().map(|c| (c.name.clone(), c.color)).collect();
         let title_s = self.race_title.clone();
@@ -175,7 +177,7 @@ impl App {
         busy.store(true, Ordering::SeqCst);
         prog.store(0, Ordering::SeqCst);
         std::thread::spawn(move || {
-            let tl = build_timeline(&RaceSetup { seed: &seed, map: key, n, len, beats: &beats, plan: &plan, winner: rw, bars: &bars_s, compose, crowd: crowd_n });
+            let tl = build_timeline(&RaceSetup { seed: &seed, map: key, n, len, beats: &beats, plan: &plan, winner: rw, bars: &bars_s, compose: compose && sync_style == 1, crowd: crowd_n, designed: compose && sync_style == 0 });
             let cs: Vec<CharStyle> = chars.iter().map(|(n, c)| CharStyle { name: n.clone(), color: *c, label: "Marble".into() }).collect();
             let sc = Scene { lyrics: &lyr, bars: &bars_s, tl: &tl, chars: &cs, beats: &beats, title: &title_s, pro_post: true };
             let r = marbeat_core::export::export_mp4(&sc, song.as_ref(), &out, if hd { 2 } else { 1 }, |f, t| { prog.store(f, Ordering::Relaxed); total.store(t, Ordering::Relaxed); !cancel.load(Ordering::Relaxed) });
@@ -202,6 +204,7 @@ impl App {
                 if let Some(x) = j["singing"].as_bool() { self.singing = x; }
                 if let Some(x) = j["sync_music"].as_bool() { self.sync_music = x; }
                 if let Some(x) = j["crowd"].as_bool() { self.crowd = x; }
+                if let Some(x) = j["sync_style"].as_u64() { self.sync_style = (x as u8).min(1); }
                 if let Some(x) = j["show_lyrics"].as_bool() { self.show_lyrics = x; }
                 if let Some(x) = j["av_offset_ms"].as_i64() { self.av_offset_ms = x as i32; }
                 if let Some(x) = j["hd"].as_bool() { self.hd = x; }
@@ -214,7 +217,7 @@ impl App {
     }
     fn save_cfg(&self) {
         if self.story.is_some() { return; }
-        let j = serde_json::json!({"roster": self.roster.iter().map(|(c, n)| serde_json::json!({"name": n, "color": c})).collect::<Vec<_>>(), "auto_update": self.auto_update, "update_url": self.update_url, "ffmpeg_path": self.ffmpeg_path, "hd": self.hd, "singing": self.singing, "sync_music": self.sync_music, "crowd": self.crowd, "show_lyrics": self.show_lyrics, "av_offset_ms": self.av_offset_ms, "speakers": self.spk, "clones": self.clones, "lyrics": self.lyrics, "seed": self.seed, "n": self.n, "map": self.map});
+        let j = serde_json::json!({"roster": self.roster.iter().map(|(c, n)| serde_json::json!({"name": n, "color": c})).collect::<Vec<_>>(), "auto_update": self.auto_update, "update_url": self.update_url, "ffmpeg_path": self.ffmpeg_path, "hd": self.hd, "singing": self.singing, "sync_music": self.sync_music, "crowd": self.crowd, "sync_style": self.sync_style, "show_lyrics": self.show_lyrics, "av_offset_ms": self.av_offset_ms, "speakers": self.spk, "clones": self.clones, "lyrics": self.lyrics, "seed": self.seed, "n": self.n, "map": self.map});
         let _ = std::fs::write(cfg_path(), j.to_string());
     }
     fn check_updates(&self) {
@@ -458,7 +461,7 @@ impl App {
         self.cur_compose = auto;
         self.cur_bars = if auto { marbeat_core::audio::intensity_bars(self.song.as_ref().unwrap()) } else { vec![] };
         if auto { self.len = len as f32; }
-        self.tl = Some(build_timeline(&RaceSetup { seed: &self.eff_seed, map: key, n, len, beats: &self.beats, plan: &plan, winner, bars: &self.cur_bars, compose: auto, crowd: if self.crowd { 3 } else { 0 } }));
+        self.tl = Some(build_timeline(&RaceSetup { seed: &self.eff_seed, map: key, n, len, beats: &self.beats, plan: &plan, winner, bars: &self.cur_bars, compose: auto && self.sync_style == 1, crowd: if self.crowd { 3 } else { 0 }, designed: auto && self.sync_style == 0 }));
         self.chars = self.active.iter().map(|&i| CharStyle { name: self.roster[i].1.clone(), color: self.roster[i].0, label: if self.tour.is_some() { format!("Round {}", self.tour.as_ref().unwrap().round + 1) } else { "Marble".into() } }).collect();
         self.t = 0.0;
         self.playing = true;
@@ -537,7 +540,14 @@ impl App {
         card(ui, "Music sync", |ui| {
             if ui.checkbox(&mut self.sync_music, "Sync the whole race to the music").changed() { a.rebuild = true; a.save = true; }
             if self.song.is_none() { muted(ui, "Open a song and the race will fit it automatically."); }
-            else if self.sync_music { muted(ui, "The race runs the length of the song, lead changes land on bars at the song's big moments, and the winner crosses on the last beat."); }
+            else if self.sync_music {
+                ui.horizontal(|ui| {
+                    if ui.selectable_label(self.sync_style == 0, "Designed map").clicked() { self.sync_style = 0; a.rebuild = true; a.save = true; }
+                    if ui.selectable_label(self.sync_style == 1, "Lane pads").clicked() { self.sync_style = 1; a.rebuild = true; a.save = true; }
+                });
+                if self.sync_style == 0 { muted(ui, "A map of ramps and trampolines built from the song: the leader falls, lands and bounces exactly on the beat and the winner crosses on the last beat."); }
+                else { muted(ui, "Marbles hit pads on their own beat patterns in lanes. Every hit is on the beat grid."); }
+            }
             else { muted(ui, "Off: you pick the length and use Director for lead changes."); }
         });
         card(ui, "Render", |ui| {

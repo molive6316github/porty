@@ -294,8 +294,8 @@ pub fn build(cfg: &BeatCfg) -> Option<(Course, Sim, usize)> {
                     (Kind::Ramp, th, (cx - tx * half, cy - ty * half), (cx + tx * half, cy + ty * half))
                 }
             };
-            segs.push(Seg { x1: p1.0, y1: p1.1, x2: p2.0, y2: p2.1, r, e, kind, t0: c.t[k], vis0: -1e9, t1: 1e9, shape: shp, owner });
-            events.push(Event { m: m as u8, f: (c.t[k] * fps).round() as u32, kind: if shp == shape::WALL { 2 } else { 1 }, v: dl as f32, x: px as f32 });
+            segs.push(Seg { x1: p1.0, y1: p1.1, x2: p2.0, y2: p2.1, r, e, kind, t0: c.t[k], vis0: -1e9, t1: 1e9, shape: shp, owner, kick: 0.0, bvx: 0.0 });
+            events.push(Event { seg: u32::MAX, m: m as u8, f: (c.t[k] * fps).round() as u32, kind: if shp == shape::WALL { 2 } else { 1 }, v: dl as f32, x: px as f32 });
         }
     }
     // decoration: pegs and small planks that fill the gaps so the whole thing reads as one map. They never touch a marble:
@@ -320,18 +320,18 @@ pub fn build(cfg: &BeatCfg) -> Option<(Course, Sim, usize)> {
                 let yy = y + rng.next() * 70.0;
                 let peg = rng.next() < 0.55;
                 if peg {
-                    if clear(x, yy, RAD + 5.0 + 9.0) { segs.push(Seg { x1: x, y1: yy, x2: x, y2: yy, r: 5.0, e: 0.9, kind: Kind::Peg, t0: 1e9, vis0: -1e9, t1: 1e9, shape: shape::PEG, owner: 255 }); placed += 1; }
+                    if clear(x, yy, RAD + 5.0 + 9.0) { segs.push(Seg { x1: x, y1: yy, x2: x, y2: yy, r: 5.0, e: 0.9, kind: Kind::Peg, t0: 1e9, vis0: -1e9, t1: 1e9, shape: shape::PEG, owner: 255, kick: 0.0, bvx: 0.0 }); placed += 1; }
                 } else {
                     let ang = (rng.next() - 0.5) * 1.1;
                     let (dx, dy) = (ang.cos() * 24.0, ang.sin() * 24.0);
-                    if clear(x, yy, RAD + 3.0 + 24.0 + 6.0) { segs.push(Seg { x1: x - dx, y1: yy - dy, x2: x + dx, y2: yy + dy, r: 3.0, e: 0.9, kind: Kind::Ramp, t0: 1e9, vis0: -1e9, t1: 1e9, shape: shape::PLANK, owner: 255 }); placed += 1; }
+                    if clear(x, yy, RAD + 3.0 + 24.0 + 6.0) { segs.push(Seg { x1: x - dx, y1: yy - dy, x2: x + dx, y2: yy + dy, r: 3.0, e: 0.9, kind: Kind::Ramp, t0: 1e9, vis0: -1e9, t1: 1e9, shape: shape::PLANK, owner: 255, kick: 0.0, bvx: 0.0 }); placed += 1; }
                 }
             }
             y += 40.0;
         }
     }
     events.sort_by_key(|e| e.f);
-    segs.push(Seg { x1: 0.0, y1: floor_y, x2: W, y2: floor_y, r: 6.0, e: 0.2, kind: Kind::Ramp, t0: -1e9, vis0: -1e9, t1: 1e9, shape: 0, owner: 255 });
+    segs.push(Seg { x1: 0.0, y1: floor_y, x2: W, y2: floor_y, r: 6.0, e: 0.2, kind: Kind::Ramp, t0: -1e9, vis0: -1e9, t1: 1e9, shape: 0, owner: 255, kick: 0.0, bvx: 0.0 });
     let map = &MAPS[MAPS.iter().position(|m| m.key == cfg.map).unwrap_or(0)];
     let course = Course { segs, spins: vec![], bands: vec![vec![]], finish_y, floor_y, hc: finish_y, pal: palette_for(map.key, cfg.seed), map_key: map.key };
     let sim = Sim { n: total, frames, pos, lead, cam, twin, winner: w, fins, events, touch };

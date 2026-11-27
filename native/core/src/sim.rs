@@ -4,7 +4,7 @@ use crate::rng::{hash_seed, Rng};
 
 pub const FPS: f64 = 60.0;
 pub const GRAV: f64 = 1000.0;
-const DT: f64 = 1.0 / 120.0;
+pub const DT: f64 = 1.0 / 120.0;
 
 #[derive(Clone, Copy)]
 struct Marble {
@@ -21,6 +21,7 @@ struct Marble {
 
 #[derive(Clone, Copy, Debug)]
 pub struct Event {
+    pub seg: u32, // which course segment was hit (u32::MAX = a marble)
     pub m: u8,
     pub f: u32,
     pub kind: u8, // 0 peg, 1 bumper, 2 ramp, 3 marble-on-marble
@@ -100,6 +101,10 @@ pub struct Engine {
     end_f: i64,
     win_f: i64,
     pub ended: bool,
+    /// per-marble rolling friction (applied only while touching the course, so flights stay exactly ballistic)
+    pub roll_drag: Vec<f64>,
+    /// a ghost marble passes through the others (the composer uses this so a planned landing cannot be knocked off course)
+    pub ghost: Vec<bool>,
     pos: Vec<f32>,
     lead: Vec<u8>,
     cam: Vec<f32>,
@@ -121,9 +126,11 @@ impl Engine {
             let vx = (r0.next() - 0.5) * 30.0;
             ms.push(Marble { x, y: 50.0 + row as f64 * 36.0, vx, vy: 0.0, fin: -1.0, still: 0, last_ev: -9, last_mm: -9, contact: -99 });
         }
-        Engine { n, ms, f: 0, cam_y: 300.0, rn: Rng::new(nudge_seed), di: -1, winner: -1, done: 0, end_f: -1, win_f: -1, ended: false, pos: vec![], lead: vec![], cam: vec![], touch: vec![], events: vec![] }
+        Engine { n, ms, f: 0, cam_y: 300.0, rn: Rng::new(nudge_seed), di: -1, winner: -1, done: 0, end_f: -1, win_f: -1, ended: false, roll_drag: vec![0.0; n], ghost: vec![false; n], pos: vec![], lead: vec![], cam: vec![], touch: vec![], events: vec![] }
     }
     pub fn time(&self) -> f64 { self.f as f64 / FPS }
+    pub fn state(&self, i: usize) -> (f64, f64, f64, f64, bool) { let m = &self.ms[i]; (m.x, m.y, m.vx, m.vy, m.fin >= 0.0) }
+    pub fn touching(&self, i: usize) -> bool { self.f as i64 - self.ms[i].contact <= 2 }
     /// the leading marble and where it is going
     pub fn look(&self) -> Look {
         let mut l = 0usize;
@@ -193,14 +200,16 @@ impl Engine {
                     let sg = &course.segs[si as usize];
                     if st < sg.t0 || st > sg.t1 { continue; } // timed bumpers only exist for a moment
                     let timed = sg.t0 > -1e8;
-                    let imp = hit_seg(&mut m, sg.x1, sg.y1, sg.x2, sg.y2, sg.r, sg.e, if timed { 320.0 } else { 0.0 });
+                    let mut imp = hit_seg(&mut m, sg.x1, sg.y1, sg.x2, sg.y2, sg.r, sg.e, if timed { 320.0 } else { 0.0 });
+                    if sg.kick > 0.0 && imp > 0.0 { m.vy = -sg.kick; m.vx = sg.bvx; imp = imp.max(200.0); } // trampoline: an exact launch
                     if imp > if timed { 25.0 } else { 140.0 } && f as i64 - m.last_ev > 2 {
                         m.last_ev = f as i64;
                         let kind = match sg.kind { Kind::Peg => 0, Kind::Bump => 1, Kind::Ramp => 2 };
-                        self.events.push(Event { m: mi as u8, f: f as u32, kind, v: imp as f32, x: m.x as f32 });
+                        self.events.push(Event { seg: si, m: mi as u8, f: f as u32, kind, v: imp as f32, x: m.x as f32 });
                     }
                 }
                 if m.x != cx0 || m.y != cy0 { m.contact = f as i64; }
+                if f as i64 - m.contact <= 1 && self.roll_drag[mi] != 0.0 { m.vx *= 1.0 - self.roll_drag[mi]; m.vy *= 1.0 - self.roll_drag[mi]; }
                 for sp2 in &course.spins {
                     if (m.y - sp2.cy).abs() < sp2.len + 30.0 {
                         let a = sp2.ph + sp2.w * st;
@@ -227,6 +236,7 @@ impl Engine {
             }
             for i in 0..n {
                 for j in (i + 1)..n {
+                    if self.ghost[i] || self.ghost[j] { continue; }
                     let (a, b) = (self.ms[i], self.ms[j]);
                     let (mut dx, mut dy) = (b.x - a.x, b.y - a.y);
                     let d2 = dx * dx + dy * dy;
@@ -243,7 +253,7 @@ impl Engine {
                             a.vx -= j2 * dx; a.vy -= j2 * dy; b.vx += j2 * dx; b.vy += j2 * dy;
                             if -vn > 160.0 && f as i64 - a.last_mm > 3 {
                                 a.last_mm = f as i64;
-                                self.events.push(Event { m: i as u8, f: f as u32, kind: 3, v: (-vn) as f32, x: ((a.x + b.x) / 2.0) as f32 });
+                                self.events.push(Event { seg: u32::MAX, m: i as u8, f: f as u32, kind: 3, v: (-vn) as f32, x: ((a.x + b.x) / 2.0) as f32 });
                             }
                         }
                         self.ms[i] = a; self.ms[j] = b;
@@ -413,9 +423,20 @@ pub struct RaceSetup<'a> {
     pub bars: &'a [(f64, f32)],
     pub compose: bool,
     pub crowd: usize,
+    /// compose a designed map (ramps and trampolines) instead of the lane pads
+    pub designed: bool,
 }
 
 pub fn build_timeline(s: &RaceSetup) -> Timeline {
+    if s.designed && s.beats.len() > 8 {
+        let cfg = crate::designed::DesignCfg { beats: s.beats, bars: s.bars, n: s.n, seed: s.seed, map: s.map, len: s.len, plan: s.plan, winner: s.winner };
+        if let Some(d) = crate::designed::build(&cfg) {
+            let frames = (s.len * FPS).ceil() as usize;
+            let lead_a: Vec<u8> = (0..=frames).map(|f| d.sim.lead[f.min(d.sim.frames - 1)]).collect();
+            let win_time = d.sim.twin;
+            return Timeline { course: d.course, sim: d.sim, factor: 1.0, frames, lead_a, win_time, n: s.n, len: s.len, landed: None, warp: Warp::linear(1.0), nplayers: s.n };
+        }
+    }
     if s.compose && s.beats.len() > 8 {
         let cfg = crate::beatmode::BeatCfg { beats: s.beats, bars: s.bars, n: s.n, seed: s.seed, map: s.map, len: s.len, plan: s.plan, winner: s.winner, crowd: s.crowd };
         if let Some((course, sim, total)) = crate::beatmode::build(&cfg) {
@@ -542,7 +563,7 @@ mod tests {
         let mut grid: Vec<f64> = vec![];
         for w in beats.windows(2) { grid.push(w[0]); grid.push((w[0] + w[1]) * 0.5); }
         for map in ["neon", "pachinko", "slide", "spinner", "funnel", "chaos"] {
-            let tl = build_timeline(&RaceSetup { seed: "beat-test", map, n: 6, len: 30.0, beats: &beats, plan: &plan, winner: Some(3), bars: &bars, compose: true, crowd: 0 });
+            let tl = build_timeline(&RaceSetup { seed: "beat-test", map, n: 6, len: 30.0, beats: &beats, plan: &plan, winner: Some(3), bars: &bars, compose: true, crowd: 0, designed: false });
             let named: Vec<&Event> = tl.sim.events.iter().filter(|e| (e.m as usize) < 6).collect();
             // 1. every hit sits on the beat / half-beat grid
             let off_grid = named.iter().filter(|e| { let t = e.f as f64 / FPS; grid.iter().map(|g| (g - t).abs()).fold(f64::MAX, f64::min) > 1.0 / FPS + 1e-6 }).count();
@@ -585,10 +606,48 @@ mod tests {
     }
 
     #[test]
+    fn designed_map_lands_on_the_beat() {
+        let beats: Vec<f64> = (0..70).map(|i| 0.4 + i as f64 * 60.0 / 128.0).collect();
+        let bars: Vec<(f64, f32)> = (0..18).map(|i| (0.4 + i as f64 * 4.0 * 60.0 / 128.0, [0.1f32, 0.2, 0.4, 0.6, 0.9, 1.0, 1.0, 0.9, 0.5, 0.3, 0.2, 0.2, 0.7, 0.9, 1.0, 0.8, 0.4, 0.2][i])).collect();
+        let plan = [(8.0, 2usize), (16.0, 4usize)];
+        let (mut on_total, mut all_total, mut winners) = (0usize, 0usize, 0usize);
+        for seed in ["design-a", "design-b", "design-c", "design-d"] {
+            let t0 = std::time::Instant::now();
+            let cfg = crate::designed::DesignCfg { beats: &beats, bars: &bars, n: 6, seed, map: "neon", len: 30.0, plan: &plan, winner: Some(3) };
+            let d = crate::designed::build(&cfg).expect("built");
+            let built = t0.elapsed();
+            let hit_tol = |t: f64, tol: i64| { let f = (t * FPS).round() as i64; d.sim.events.iter().any(|e| (e.f as i64 - f).abs() <= tol) };
+            let hit = |t: f64| hit_tol(t, 1);
+            // ramp landings must be within one frame; trampoline bounces within two (the physics steps in 1/120 s)
+            let on = d.landings.iter().zip(d.kinds.iter()).filter(|(t, k)| hit_tol(**t, if **k == 2 { 2 } else { 1 })).count();
+            on_total += on; all_total += d.landings.len();
+            { let offs: Vec<i64> = d.landings.iter().zip(d.kinds.iter()).filter(|(_, k)| **k == 2).map(|(t, _)| { let f = (t * FPS).round() as i64; d.sim.events.iter().map(|e| e.f as i64 - f).filter(|o| o.abs() <= 12).min_by_key(|o| o.abs()).unwrap_or(99) }).collect(); eprintln!("   {seed} bounce offsets (frames): {:?}", offs); }
+            for k in 0..3u8 { let (a, b) = d.landings.iter().zip(d.kinds.iter()).filter(|(_, kk)| **kk == k).fold((0, 0), |(a, b), (t, _)| (a + hit(*t) as i32, b + 1)); eprintln!("   {seed} kind {k} ({}): {a}/{b}", ["ramp landing", "trampoline first landing", "trampoline bounce"][k as usize]); }
+            if d.sim.winner == 3 { winners += 1; }
+            let mut max_v = 0.0f64; let mut stuck = 0;
+            for m in 0..6 {
+                // a marble that is neither finished nor getting anywhere over four seconds is stuck
+                let end = d.sim.frames - 1;
+                let (y1, y0) = (d.sim.at(end, m).1, d.sim.at(end.saturating_sub(240), m).1);
+                if d.sim.fins[m] < 0.0 && y1 - y0 < 100.0 { stuck += 1; }
+            }
+            for f in 1..d.sim.frames { for a in 0..6 { let (ax, ay) = d.sim.at(f, a); let (px, py) = d.sim.at(f - 1, a); max_v = max_v.max((ax - px).hypot(ay - py) * FPS); } }
+            let ramps = d.course.segs.iter().filter(|g| g.shape == 0).count();
+            let tramps = d.course.segs.iter().filter(|g| g.shape == shape::TRAMP).count();
+            eprintln!("{seed}: landings on the beat {on}/{}, ramps {ramps}, trampolines {tramps}, finish {:.2}s (target 27.5), winner {}, stuck {stuck}, top speed {:.0}, built in {:?}", d.landings.len(), d.sim.twin, d.sim.winner, max_v, built);
+            assert!((d.sim.twin - 27.5).abs() < 1.0, "{seed}: finish {}", d.sim.twin);
+            assert!(max_v <= 1400.0, "{seed}: speed {max_v}");
+            assert_eq!(stuck, 0, "{seed}: marbles stuck");
+        }
+        assert!(on_total as f64 >= all_total as f64 * 0.85, "only {on_total}/{all_total} landings on the beat");
+        assert!(winners >= 2, "the planned winner won only {winners}/4 times");
+    }
+
+    #[test]
     fn warp_puts_impacts_on_the_beat() {
         let beats: Vec<f64> = (0..70).map(|i| 0.4 + i as f64 * 60.0 / 128.0).collect();
         for map in ["neon", "pachinko", "slide", "spinner", "funnel", "chaos"] {
-            let tl = build_timeline(&RaceSetup { seed: "sync-test", map, n: 6, len: 30.0, beats: &beats, plan: &[], winner: None, bars: &[], compose: false, crowd: 0 });
+            let tl = build_timeline(&RaceSetup { seed: "sync-test", map, n: 6, len: 30.0, beats: &beats, plan: &[], winner: None, bars: &[], compose: false, crowd: 0, designed: false });
             let (n, before, after, lo, hi) = alignment_stats(&tl, &beats);
             let (cb, ca) = beat_coverage(&tl, &beats);
             eprintln!("{map}: beats with a hit on them {:.0}% -> {:.0}%", cb * 100.0, ca * 100.0);

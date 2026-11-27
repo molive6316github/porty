@@ -1,6 +1,7 @@
 //! Marbeat core: random numbers, maps, physics and (soon) drawing. No window, no GPU: it runs headless.
 pub mod audio;
 pub mod beatmode;
+pub mod designed;
 pub mod course;
 pub mod export;
 pub mod render;
