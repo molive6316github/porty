@@ -1,10 +1,12 @@
 mod ai;
+mod ui;
 mod update;
 use eframe::egui;
 use marbeat_core::course::MAPS;
 use marbeat_core::render::*;
 use marbeat_core::sim::*;
-use std::sync::{atomic::{AtomicBool, AtomicUsize, Ordering}, Arc, Mutex};
+use std::sync::{atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering}, Arc, Mutex};
+use ui::*;
 use std::time::Instant;
 use marbeat_core::audio::{load_song, Song};
 use rodio::{buffer::SamplesBuffer, OutputStream, OutputStreamHandle, Sink};
@@ -53,7 +55,21 @@ struct App {
     ai_status: Arc<Mutex<String>>,
     ai_busy: Arc<AtomicBool>,
     ai_out: Arc<Mutex<Option<Result<ai::Result_, String>>>>,
+    auto_update: bool,
+    update_url: String,
+    ffmpeg_path: String,           // manual override, empty = auto
+    ff_found: Arc<Mutex<Option<String>>>,
+    ff_busy: Arc<AtomicBool>,
+    upd_checking: Arc<AtomicBool>,
+    upd_got: Arc<AtomicU64>,
+    upd_total: Arc<AtomicU64>,
+    toast: Option<(String, Instant)>,
+    confirm_del: bool,
+    confirm_reset: bool,
 }
+
+#[derive(Default)]
+struct Acts { rebuild: bool, load_path: Option<String>, toggled: bool, export: bool, save: bool, tour_next: bool, sing_go: bool, restart_audio: bool, seek: Option<f64> }
 
 #[derive(Clone, Default)]
 struct Tour { remaining: Vec<usize>, next: Vec<usize>, heat: usize, round: usize, log: Vec<String>, champion: Option<usize>, recorded: bool }
@@ -68,11 +84,14 @@ fn cfg_path() -> std::path::PathBuf {
 impl App {
     fn new() -> Self {
         let mut a = App { map: 0, seed: "42".into(), n: 6, len: 40.0, tl: None, beats: (0..2000).map(|i| i as f64 * 0.5).collect(), chars: vec![], r: Renderer::new(405, 720), tex: None, t: 0.0, playing: true, last: Instant::now(), song: None, status: "No song loaded".into(), _stream: OutputStream::try_default().ok(), sink: None, prog: Default::default(), total: Default::default(), cancel: Default::default(), exporting: Default::default(), result: Default::default(), hd: true, upd: Default::default(), upd_msg: Default::default(), upd_busy: Default::default(),
-            roster: (0..8).map(|i| (COLS[i], NAMES[i].to_string())).collect(), rig: false, plan: vec![], rig_winner: None, active: vec![], eff_seed: String::new(), tour: None, tab: 0, spk: vec![10, 25, 40, 60, 75, 90, 5, 100], clones: vec![None; 8], lyrics: String::new(), voiced: None, ai_status: Default::default(), ai_busy: Default::default(), ai_out: Default::default() };
+            roster: (0..8).map(|i| (COLS[i], NAMES[i].to_string())).collect(), rig: false, plan: vec![], rig_winner: None, active: vec![], eff_seed: String::new(), tour: None, tab: 0, spk: vec![10, 25, 40, 60, 75, 90, 5, 100], clones: vec![None; 8], lyrics: String::new(), voiced: None, ai_status: Default::default(), ai_busy: Default::default(), ai_out: Default::default(), auto_update: true, update_url: String::new(), ffmpeg_path: String::new(), ff_found: Default::default(), ff_busy: Default::default(), upd_checking: Default::default(), upd_got: Default::default(), upd_total: Default::default(), toast: None, confirm_del: false, confirm_reset: false };
         a.load_cfg();
+        update::set_url(Some(a.update_url.clone()));
+        marbeat_core::export::set_ffmpeg_override(Some(a.ffmpeg_path.clone()));
+        if a.auto_update { a.check_updates(); }
+        a.detect_ffmpeg();
         if let Ok(t) = std::env::var("MARBEAT_TAB") { a.tab = t.parse().unwrap_or(0); }
         update::cleanup_old();
-        { let (u, m) = (a.upd.clone(), a.upd_msg.clone()); std::thread::spawn(move || match update::check() { Ok(Some(i)) => *u.lock().unwrap() = Some(i), Ok(None) => {}, Err(_) => *m.lock().unwrap() = "Offline: couldn't check for updates".to_string() }); }
         a.rebuild();
         a
     }
@@ -136,6 +155,10 @@ impl App {
                 if let Some(a) = j["speakers"].as_array() { for (i, v) in a.iter().enumerate().take(8) { if let Some(x) = v.as_i64() { self.spk[i] = x; } } }
                 if let Some(a) = j["clones"].as_array() { for (i, v) in a.iter().enumerate().take(8) { self.clones[i] = v.as_str().map(|x| x.to_string()); } }
                 if let Some(x) = j["lyrics"].as_str() { self.lyrics = x.into(); }
+                if let Some(x) = j["auto_update"].as_bool() { self.auto_update = x; }
+                if let Some(x) = j["update_url"].as_str() { self.update_url = x.into(); }
+                if let Some(x) = j["ffmpeg_path"].as_str() { self.ffmpeg_path = x.into(); }
+                if let Some(x) = j["hd"].as_bool() { self.hd = x; }
                 if let Some(x) = j["seed"].as_str() { self.seed = x.into(); }
                 if let Some(x) = j["n"].as_u64() { self.n = (x as usize).clamp(2, 8); }
                 if let Some(x) = j["map"].as_u64() { self.map = (x as usize).min(MAPS.len() - 1); }
@@ -144,9 +167,38 @@ impl App {
         self.rebuild();
     }
     fn save_cfg(&self) {
-        let j = serde_json::json!({"roster": self.roster.iter().map(|(c, n)| serde_json::json!({"name": n, "color": c})).collect::<Vec<_>>(), "speakers": self.spk, "clones": self.clones, "lyrics": self.lyrics, "seed": self.seed, "n": self.n, "map": self.map});
+        let j = serde_json::json!({"roster": self.roster.iter().map(|(c, n)| serde_json::json!({"name": n, "color": c})).collect::<Vec<_>>(), "auto_update": self.auto_update, "update_url": self.update_url, "ffmpeg_path": self.ffmpeg_path, "hd": self.hd, "speakers": self.spk, "clones": self.clones, "lyrics": self.lyrics, "seed": self.seed, "n": self.n, "map": self.map});
         let _ = std::fs::write(cfg_path(), j.to_string());
     }
+    fn check_updates(&self) {
+        let (u, m, c) = (self.upd.clone(), self.upd_msg.clone(), self.upd_checking.clone());
+        c.store(true, Ordering::SeqCst);
+        *m.lock().unwrap() = "Checking…".into();
+        std::thread::spawn(move || {
+            match update::check() {
+                Ok(Some(i)) => { *m.lock().unwrap() = format!("Version {} is available", i.version); *u.lock().unwrap() = Some(i); }
+                Ok(None) => { *u.lock().unwrap() = None; *m.lock().unwrap() = format!("You're up to date (v{})", update::VERSION); }
+                Err(_) => *m.lock().unwrap() = "Couldn't reach the update server. Are you online?".into(),
+            }
+            c.store(false, Ordering::SeqCst);
+        });
+    }
+    fn install_update(&self) {
+        let Some(info) = self.upd.lock().unwrap().clone() else { return };
+        let (m, b, g, t) = (self.upd_msg.clone(), self.upd_busy.clone(), self.upd_got.clone(), self.upd_total.clone());
+        b.store(true, Ordering::SeqCst);
+        std::thread::spawn(move || {
+            *m.lock().unwrap() = "Downloading…".into();
+            if let Err(e) = update::install(&info, |got, total| { g.store(got, Ordering::Relaxed); t.store(total, Ordering::Relaxed); }) { *m.lock().unwrap() = format!("Update failed: {e}"); }
+            b.store(false, Ordering::SeqCst);
+        });
+    }
+    fn detect_ffmpeg(&self) {
+        let (f, b) = (self.ff_found.clone(), self.ff_busy.clone());
+        b.store(true, Ordering::SeqCst);
+        std::thread::spawn(move || { *f.lock().unwrap() = marbeat_core::export::find_ffmpeg(); b.store(false, Ordering::SeqCst); });
+    }
+    fn say(&mut self, s: impl Into<String>) { self.toast = Some((s.into(), Instant::now())); }
     fn start_audio_at(&mut self, t: f64) { let keep = self.t; self.t = t; self.start_audio(); self.t = keep; }
     fn start_sing(&mut self) {
         let Some(song) = &self.song else { return };
@@ -217,6 +269,278 @@ impl App {
     }
 }
 
+fn dir_size(p: &std::path::Path) -> u64 {
+    let mut n = 0;
+    if let Ok(rd) = std::fs::read_dir(p) { for e in rd.flatten() { if let Ok(m) = e.metadata() { n += if m.is_dir() { dir_size(&e.path()) } else { m.len() }; } } }
+    n
+}
+fn open_path(p: &std::path::Path) {
+    let _ = std::fs::create_dir_all(p);
+    #[cfg(windows)] { let _ = std::process::Command::new("explorer").arg(p).spawn(); }
+    #[cfg(not(windows))] { let _ = std::process::Command::new("xdg-open").arg(p).spawn(); }
+}
+fn mb(n: u64) -> String { if n > 1_000_000_000 { format!("{:.1} GB", n as f64 / 1e9) } else { format!("{} MB", n / 1_000_000) } }
+fn rand_seed() -> String { format!("{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(7) % 100000) }
+
+impl App {
+    fn studio_left(&mut self, ui: &mut egui::Ui, a: &mut Acts) {
+        card(ui, "Song", |ui| {
+            if primary(ui, "Open a song…").clicked() {
+                if let Some(f) = rfd::FileDialog::new().add_filter("audio", &["mp3", "wav", "flac", "ogg", "m4a", "aac"]).pick_file() { a.load_path = Some(f.to_string_lossy().to_string()); }
+            }
+            muted(ui, self.status.clone());
+            if self.voiced.is_some() { good(ui, "AI voices are on"); }
+        });
+        card(ui, "Race", |ui| {
+            ui.spacing_mut().slider_width = 110.0;
+            row_label(ui, "Map");
+            egui::ComboBox::from_id_salt("map").width(ui.available_width()).selected_text(MAPS[self.map].label).show_ui(ui, |ui| {
+                for (i, m) in MAPS.iter().enumerate() { if ui.selectable_value(&mut self.map, i, m.label).changed() { a.rebuild = true; a.save = true; } }
+            });
+            row_label(ui, "Seed");
+            ui.horizontal(|ui| {
+                if ui.add(egui::TextEdit::singleline(&mut self.seed).desired_width(ui.available_width() - 104.0)).lost_focus() { a.rebuild = true; a.save = true; }
+                if ghost(ui, "Random").clicked() { self.seed = rand_seed(); a.rebuild = true; a.save = true; }
+            });
+            if ui.add(egui::Slider::new(&mut self.n, 2..=8).text("marbles")).drag_stopped() { a.rebuild = true; a.save = true; }
+            if ui.add(egui::Slider::new(&mut self.len, 15.0..=180.0).text("seconds")).drag_stopped() { a.rebuild = true; }
+        });
+        card(ui, "Render", |ui| {
+            ui.horizontal(|ui| {
+                if ui.selectable_label(!self.hd, "Fast 540p").clicked() { self.hd = false; a.save = true; }
+                if ui.selectable_label(self.hd, "HD 1080p").clicked() { self.hd = true; a.save = true; }
+            });
+            if self.exporting.load(Ordering::Relaxed) {
+                let (p, t) = (self.prog.load(Ordering::Relaxed), self.total.load(Ordering::Relaxed).max(1));
+                ui.add(egui::ProgressBar::new(p as f32 / t as f32).text(format!("Rendering {}%", p * 100 / t)).fill(ACCENT));
+                if ghost(ui, "Cancel").clicked() { self.cancel.store(true, Ordering::SeqCst); }
+            } else {
+                if primary(ui, "Render MP4…").clicked() { a.export = true; }
+                if self.ff_found.lock().unwrap().is_none() && !self.ff_busy.load(Ordering::Relaxed) { ui.label(egui::RichText::new("ffmpeg not found. Fix it in Settings.").color(WARN).size(12.5)); }
+            }
+            if let Some(m) = self.result.lock().unwrap().clone() { muted(ui, m); }
+        });
+    }
+
+    fn cast_left(&mut self, ui: &mut egui::Ui, a: &mut Acts) {
+        card(ui, "Marbles", |ui| {
+            let mut ch = false;
+            for i in 0..8 {
+                ui.horizontal(|ui| {
+                    ch |= ui.color_edit_button_srgb(&mut self.roster[i].0).changed();
+                    ch |= ui.add(egui::TextEdit::singleline(&mut self.roster[i].1).desired_width(76.0)).changed();
+                    ch |= ui.add(egui::DragValue::new(&mut self.spk[i]).range(0..=108).prefix("#")).changed();
+                    let lbl = if self.clones[i].is_some() { "clone ✓" } else { "clone" };
+                    if ghost(ui, lbl).clicked() {
+                        if self.clones[i].is_some() { self.clones[i] = None; ch = true; }
+                        else if let Some(f) = rfd::FileDialog::new().add_filter("voice sample", &["wav", "mp3", "flac", "ogg", "m4a"]).pick_file() { self.clones[i] = Some(f.to_string_lossy().to_string()); ch = true; }
+                    }
+                });
+            }
+            if ch { a.save = true; for (k, &i) in self.active.iter().enumerate() { if let Some(c) = self.chars.get_mut(k) { c.name = self.roster[i].1.clone(); c.color = self.roster[i].0; } } }
+        });
+        card(ui, "Voices", |ui| {
+            muted(ui, "Pick a voice number (0–108) for each marble. Click “clone” to use a 5–15 second clean recording of someone talking instead. Click again to remove it.");
+        });
+    }
+
+    fn rig_left(&mut self, ui: &mut egui::Ui, a: &mut Acts) {
+        card(ui, "Rig the race", |ui| {
+            ui.checkbox(&mut self.rig, "Control who leads and who wins");
+            if self.rig {
+                let names: Vec<String> = self.roster.iter().take(self.n).map(|r| r.1.clone()).collect();
+                muted(ui, "Lead changes: from this time on, this marble is in front.");
+                let mut del = None;
+                for (k, (t, m)) in self.plan.iter_mut().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.add(egui::DragValue::new(t).speed(0.5).suffix(" s").range(0.0..=300.0));
+                        egui::ComboBox::from_id_salt(k).selected_text(names.get(*m).cloned().unwrap_or_default()).show_ui(ui, |ui| { for (i, n) in names.iter().enumerate() { ui.selectable_value(m, i, n); } });
+                        if ghost(ui, "✕").clicked() { del = Some(k); }
+                    });
+                }
+                if let Some(k) = del { self.plan.remove(k); }
+                if ghost(ui, "+ Add lead change").clicked() { let t = self.plan.last().map(|p| p.0 + 6.0).unwrap_or(5.0); self.plan.push((t, 0)); }
+                ui.separator();
+                ui.horizontal(|ui| {
+                    row_label(ui, "Winner");
+                    let cur = self.rig_winner.and_then(|w| names.get(w).cloned()).unwrap_or("anyone".into());
+                    egui::ComboBox::from_id_salt("win").selected_text(cur).show_ui(ui, |ui| { ui.selectable_value(&mut self.rig_winner, None, "anyone"); for (i, n) in names.iter().enumerate() { ui.selectable_value(&mut self.rig_winner, Some(i), n); } });
+                });
+            }
+            if primary(ui, "Apply and restart").clicked() { a.rebuild = true; }
+        });
+    }
+
+    fn cup_left(&mut self, ui: &mut egui::Ui, a: &mut Acts) {
+        card(ui, "Tournament", |ui| {
+            if self.tour.is_none() {
+                muted(ui, format!("{} marbles race in heats of up to 4. Winners move on until one is left.", self.n));
+                if primary(ui, "Start tournament").clicked() { self.tour = Some(Tour { remaining: (0..self.n).collect(), ..Default::default() }); a.rebuild = true; }
+            } else {
+                let t = self.tour.clone().unwrap();
+                match t.champion {
+                    Some(c) => { ui.label(egui::RichText::new(format!("Champion: {}", self.roster[c].1)).size(18.0).strong().color(WARN)); }
+                    None => { ui.label(egui::RichText::new(format!("Round {} · heat {}", t.round + 1, t.heat + 1)).strong()); if t.recorded && primary(ui, "Next heat").clicked() { a.tour_next = true; } }
+                }
+                for l in &t.log { muted(ui, l.clone()); }
+                if ghost(ui, "Cancel tournament").clicked() { self.tour = None; a.rebuild = true; }
+            }
+        });
+    }
+
+    fn voices_left(&mut self, ui: &mut egui::Ui, a: &mut Acts) {
+        card(ui, "Lyrics", |ui| {
+            muted(ui, "One line per row. The AI listens to the song, syncs the words, and whoever is in the lead sings each line.");
+            if ui.add(egui::TextEdit::multiline(&mut self.lyrics).desired_rows(12).desired_width(f32::INFINITY).hint_text("Paste lyrics here…")).changed() { a.save = true; }
+        });
+        card(ui, "Sing", |ui| {
+            if self.ai_busy.load(Ordering::Relaxed) {
+                ui.horizontal(|ui| { ui.spinner(); ui.label(self.ai_status.lock().unwrap().clone()); });
+            } else {
+                let ok = self.song.is_some() && !self.lyrics.trim().is_empty();
+                if ui.add_enabled(ok, egui::Button::new(egui::RichText::new("Sing the lyrics").strong().color(egui::Color32::WHITE)).fill(ACCENT).min_size(egui::vec2(ui.available_width().min(260.0), 36.0))).clicked() { a.sing_go = true; }
+                if self.song.is_none() { muted(ui, "Open a song in Studio first."); }
+                if self.voiced.is_some() && ghost(ui, "Back to the original song").clicked() { self.voiced = None; a.restart_audio = true; }
+                let st = self.ai_status.lock().unwrap().clone();
+                if !st.is_empty() { muted(ui, st); }
+                muted(ui, "First run downloads the AI models (about 200 MB).");
+            }
+        });
+    }
+
+    fn settings_page(&mut self, ui: &mut egui::Ui, a: &mut Acts) {
+        let w = ui.available_width();
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            let side = ((w - 720.0) / 2.0).max(0.0);
+            egui::Frame::none().inner_margin(egui::Margin { left: side, right: side, top: 6.0, bottom: 24.0 }).show(ui, |ui| {
+                ui.heading("Settings");
+                ui.add_space(4.0);
+
+                // ---- updates
+                let info = self.upd.lock().unwrap().clone();
+                card(ui, "Updates", |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(format!("Marbeat v{}", update::VERSION)).size(20.0).strong());
+                        let m0 = self.upd_msg.lock().unwrap().clone();
+                        if info.is_some() { badge(ui, "Update available", WARN); }
+                        else if m0.starts_with("Couldn't") { badge(ui, "Can't check", MUTED); }
+                        else if m0.starts_with("You're up to date") { badge(ui, "Up to date", MINT); }
+                    });
+                    let msg = self.upd_msg.lock().unwrap().clone();
+                    if !msg.is_empty() { muted(ui, msg); }
+                    if let Some(i) = &info {
+                        ui.add_space(2.0);
+                        ui.label(egui::RichText::new(format!("New version: v{}", i.version)).strong());
+                        if !i.notes.is_empty() { muted(ui, i.notes.clone()); }
+                        if self.upd_busy.load(Ordering::Relaxed) {
+                            let (g, t) = (self.upd_got.load(Ordering::Relaxed), self.upd_total.load(Ordering::Relaxed).max(1));
+                            ui.add(egui::ProgressBar::new(g as f32 / t as f32).text(format!("Downloading {} / {}", mb(g), mb(t))).fill(ACCENT));
+                        } else if primary(ui, &format!("Update to v{} and restart", i.version)).clicked() { self.install_update(); }
+                    }
+                    ui.horizontal(|ui| {
+                        let checking = self.upd_checking.load(Ordering::Relaxed);
+                        if ui.add_enabled(!checking && !self.upd_busy.load(Ordering::Relaxed), egui::Button::new("Check for updates").min_size(egui::vec2(0.0, 32.0))).clicked() { update::set_url(Some(self.update_url.clone())); self.check_updates(); }
+                        if checking { ui.spinner(); }
+                    });
+                    if ui.checkbox(&mut self.auto_update, "Check for updates when Marbeat starts").changed() { a.save = true; }
+                    ui.collapsing("Advanced", |ui| {
+                        row_label(ui, "Update source (leave empty for the default)");
+                        ui.horizontal(|ui| {
+                            if ui.add(egui::TextEdit::singleline(&mut self.update_url).hint_text(update::default_url()).desired_width(ui.available_width() - 80.0)).lost_focus() { update::set_url(Some(self.update_url.clone())); a.save = true; }
+                            if ghost(ui, "Reset").clicked() { self.update_url.clear(); update::set_url(None); a.save = true; }
+                        });
+                    });
+                });
+                ui.add_space(10.0);
+
+                // ---- video
+                card(ui, "Video", |ui| {
+                    row_label(ui, "Default render quality");
+                    ui.horizontal(|ui| {
+                        if ui.selectable_label(!self.hd, "Fast  540 × 960").clicked() { self.hd = false; a.save = true; }
+                        if ui.selectable_label(self.hd, "HD  1080 × 1920").clicked() { self.hd = true; a.save = true; }
+                    });
+                    muted(ui, "Renders run at 60 fps with bloom, color grade and mastered audio.");
+                });
+                ui.add_space(10.0);
+
+                // ---- ffmpeg
+                card(ui, "Video encoder (ffmpeg)", |ui| {
+                    let found = self.ff_found.lock().unwrap().clone();
+                    let busy = self.ff_busy.load(Ordering::Relaxed);
+                    ui.horizontal(|ui| {
+                        if busy { ui.spinner(); ui.label("Searching this computer…"); }
+                        else if found.is_some() { badge(ui, "Found", MINT); }
+                        else { badge(ui, "Not found", BAD); }
+                    });
+                    if let Some(p) = &found { muted(ui, p.clone()); }
+                    else if !busy { muted(ui, "Marbeat needs ffmpeg to save MP4s. Install it, or point to it below."); }
+                    ui.horizontal(|ui| {
+                        if ui.add_enabled(!busy, egui::Button::new("Find automatically").min_size(egui::vec2(0.0, 32.0))).clicked() {
+                            self.ffmpeg_path.clear(); marbeat_core::export::set_ffmpeg_override(None); marbeat_core::export::forget_ffmpeg_cache(); self.detect_ffmpeg(); a.save = true;
+                        }
+                        if ghost(ui, "Browse…").clicked() {
+                            if let Some(f) = rfd::FileDialog::new().set_title("Pick ffmpeg").pick_file() {
+                                let p = f.to_string_lossy().to_string();
+                                if marbeat_core::export::ffmpeg_works(&p) { self.ffmpeg_path = p.clone(); marbeat_core::export::set_ffmpeg_override(Some(p)); self.detect_ffmpeg(); a.save = true; }
+                                else { self.say("That file didn't run as ffmpeg."); }
+                            }
+                        }
+                    });
+                    if !self.ffmpeg_path.is_empty() { muted(ui, format!("Manual choice: {}", self.ffmpeg_path)); }
+                });
+                ui.add_space(10.0);
+
+                // ---- AI
+                let dir = ai::ai_dir();
+                card(ui, "AI models", |ui| {
+                    muted(ui, "Voices, lyric listening and vocal separation run on this computer. Models download the first time you use them.");
+                    row_label(ui, "Stored in");
+                    ui.label(dir.to_string_lossy().to_string());
+                    let size = dir_size(&dir);
+                    ui.label(format!("{} used", mb(size)));
+                    ui.horizontal(|ui| {
+                        if ghost(ui, "Open folder").clicked() { open_path(&dir); }
+                        if self.confirm_del {
+                            if ui.add(egui::Button::new(egui::RichText::new("Really delete?").color(egui::Color32::WHITE)).fill(BAD).min_size(egui::vec2(0.0, 32.0))).clicked() { let _ = std::fs::remove_dir_all(&dir); self.confirm_del = false; self.say("Models deleted. They will download again when needed."); }
+                            if ghost(ui, "Keep").clicked() { self.confirm_del = false; }
+                        } else if ghost(ui, "Delete downloaded models").clicked() { self.confirm_del = true; }
+                    });
+                });
+                ui.add_space(10.0);
+
+                // ---- data
+                card(ui, "Your data", |ui| {
+                    row_label(ui, "Settings file");
+                    ui.label(cfg_path().to_string_lossy().to_string());
+                    ui.horizontal(|ui| {
+                        if ghost(ui, "Open folder").clicked() { if let Some(d) = cfg_path().parent() { open_path(d); } }
+                        if self.confirm_reset {
+                            if ui.add(egui::Button::new(egui::RichText::new("Really reset?").color(egui::Color32::WHITE)).fill(BAD).min_size(egui::vec2(0.0, 32.0))).clicked() {
+                                let _ = std::fs::remove_file(cfg_path());
+                                self.roster = (0..8).map(|i| (COLS[i], NAMES[i].to_string())).collect(); self.spk = vec![10, 25, 40, 60, 75, 90, 5, 100]; self.clones = vec![None; 8];
+                                self.lyrics.clear(); self.seed = "42".into(); self.n = 6; self.map = 0; self.auto_update = true; self.update_url.clear(); update::set_url(None); self.hd = true;
+                                self.confirm_reset = false; a.rebuild = true; self.say("Settings reset.");
+                            }
+                            if ghost(ui, "Keep").clicked() { self.confirm_reset = false; }
+                        } else if ghost(ui, "Reset all settings").clicked() { self.confirm_reset = true; }
+                    });
+                });
+                ui.add_space(10.0);
+
+                // ---- about
+                card(ui, "About", |ui| {
+                    ui.label(egui::RichText::new("Marbeat").strong());
+                    muted(ui, "Native Rust build. Physics, rendering, audio and AI all run on your computer.");
+                    ui.collapsing("Credits and licenses", |ui| {
+                        for l in ["Piper text-to-speech (MIT), VCTK voices", "OpenAI Whisper tiny.en (MIT) for lyric listening", "Spleeter by Deezer (MIT) for vocal separation", "kNN-VC voice conversion (MIT) for voice cloning", "ONNX Runtime (MIT)", "espeak-ng Rust port (GPL-3.0)", "egui, tiny-skia, symphonia, rodio (MIT / Apache-2.0)"] { muted(ui, format!("• {l}")); }
+                    });
+                });
+            });
+        });
+    }
+}
+
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
         let now = Instant::now();
@@ -227,153 +551,101 @@ impl eframe::App for App {
             self.t += dt;
             if self.t > end { self.t = end; self.playing = false; }
         }
-        let mut rebuild = false;
-        let mut load_path: Option<String> = None;
-        let mut toggled = false;
-        let mut export = false;
-        let mut save = false;
-        let mut tour_next = false;
-        let mut sing_go = false;
-        let mut restart_audio = false;
-        egui::SidePanel::left("ctl").exact_width(250.0).show(ctx, |ui| {
-            ui.heading("Marbeat");
-            ui.label(format!("native Rust build · v{}", update::VERSION));
-            let info = self.upd.lock().unwrap().clone();
-            if let Some(i) = info {
-                ui.colored_label(egui::Color32::from_rgb(120, 255, 140), format!("Update v{} available", i.version));
-                if !i.notes.is_empty() { ui.small(&i.notes); }
-                if self.upd_busy.load(Ordering::Relaxed) { ui.spinner(); }
-                else if ui.button("Update & restart").clicked() {
-                    self.upd_busy.store(true, Ordering::SeqCst);
-                    let (m, b, ii) = (self.upd_msg.clone(), self.upd_busy.clone(), i.clone());
-                    std::thread::spawn(move || { *m.lock().unwrap() = "Downloading update…".into(); if let Err(e) = update::install(&ii, |_, _| {}) { *m.lock().unwrap() = format!("Update failed: {e}"); } b.store(false, Ordering::SeqCst); });
+        let mut a = Acts::default();
+
+        // ---- top bar
+        egui::TopBottomPanel::top("top").exact_height(54.0).frame(egui::Frame::none().fill(BG2).inner_margin(egui::Margin::symmetric(18.0, 0.0))).show(ctx, |ui| {
+            ui.horizontal_centered(|ui| {
+                let (r, _) = ui.allocate_exact_size(egui::vec2(26.0, 26.0), egui::Sense::hover());
+                ui.painter().circle_filled(r.center(), 12.0, ACCENT);
+                ui.painter().circle_filled(r.center() + egui::vec2(-4.0, -4.0), 3.6, egui::Color32::from_white_alpha(200));
+                ui.label(egui::RichText::new("Marbeat").size(20.0).strong());
+                ui.add_space(18.0);
+                for (i, l) in ["Studio", "Cast", "Director", "Tournament", "Voices", "Settings"].iter().enumerate() {
+                    if tab(ui, self.tab == i as u8, l) { self.tab = i as u8; }
                 }
-            }
-            { let m = self.upd_msg.lock().unwrap(); if !m.is_empty() { ui.small(m.as_str()); } }
-            ui.horizontal(|ui| { for (i, l) in ["Race", "Cast", "Rig", "Cup", "Voices"].iter().enumerate() { ui.selectable_value(&mut self.tab, i as u8, *l); } });
-            ui.separator();
-            match self.tab {
-                1 => {
-                    let mut ch = false;
-                    for (i, (c, n)) in self.roster.iter_mut().enumerate() { ui.horizontal(|ui| {
-                        ch |= ui.color_edit_button_srgb(c).changed();
-                        ch |= ui.add(egui::TextEdit::singleline(n).desired_width(80.0)).changed();
-                        ch |= ui.add(egui::DragValue::new(&mut self.spk[i]).range(0..=108).prefix("voice ")).changed();
-                        let lbl = if self.clones[i].is_some() { "clone ✓" } else { "clone…" };
-                        if ui.small_button(lbl).clicked() {
-                            if self.clones[i].is_some() { self.clones[i] = None; ch = true; }
-                            else if let Some(f) = rfd::FileDialog::new().add_filter("voice sample", &["wav", "mp3", "flac", "ogg", "m4a"]).pick_file() { self.clones[i] = Some(f.to_string_lossy().to_string()); ch = true; }
-                        }
-                    }); }
-                    ui.small("clone: pick a 5-15 s clean recording of someone talking");
-                    if ch { save = true; for (k, &i) in self.active.iter().enumerate() { if let Some(c) = self.chars.get_mut(k) { c.name = self.roster[i].1.clone(); c.color = self.roster[i].0; } } }
-                    return;
-                }
-                2 => {
-                    ui.checkbox(&mut self.rig, "Rig the race");
-                    let names: Vec<String> = self.roster.iter().take(self.n).map(|r| r.1.clone()).collect();
-                    let mut del = None;
-                    for (k, (t, m)) in self.plan.iter_mut().enumerate() {
-                        ui.horizontal(|ui| {
-                            ui.add(egui::DragValue::new(t).speed(0.5).suffix("s").range(0.0..=300.0));
-                            egui::ComboBox::from_id_salt(k).selected_text(names.get(*m).cloned().unwrap_or_default()).show_ui(ui, |ui| { for (i, n) in names.iter().enumerate() { ui.selectable_value(m, i, n); } });
-                            if ui.small_button("x").clicked() { del = Some(k); }
-                        });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if self.upd.lock().unwrap().is_some() {
+                        if ui.add(egui::Button::new(egui::RichText::new("Update available").strong().color(egui::Color32::BLACK)).fill(WARN).rounding(16.0)).clicked() { self.tab = 5; }
                     }
-                    if let Some(k) = del { self.plan.remove(k); }
-                    if ui.button("+ lead change").clicked() { let t = self.plan.last().map(|p| p.0 + 6.0).unwrap_or(5.0); self.plan.push((t, 0)); }
-                    ui.horizontal(|ui| {
-                        ui.label("Winner");
-                        let cur = self.rig_winner.and_then(|w| names.get(w).cloned()).unwrap_or("anyone".into());
-                        egui::ComboBox::from_id_salt("win").selected_text(cur).show_ui(ui, |ui| { ui.selectable_value(&mut self.rig_winner, None, "anyone"); for (i, n) in names.iter().enumerate() { ui.selectable_value(&mut self.rig_winner, Some(i), n); } });
-                    });
-                    if ui.button("Apply (restart race)").clicked() { rebuild = true; }
-                    return;
-                }
-                4 => {
-                    ui.small("Paste the lyrics, one line per row. The marbeats AI hears the song, syncs the words, and whoever's in the lead sings each line.");
-                    if ui.add(egui::TextEdit::multiline(&mut self.lyrics).desired_rows(10).desired_width(230.0)).changed() { save = true; }
-                    let busy = self.ai_busy.load(Ordering::Relaxed);
-                    if busy { ui.spinner(); ui.small(self.ai_status.lock().unwrap().clone()); }
-                    else {
-                        if ui.add_enabled(self.song.is_some() && !self.lyrics.trim().is_empty(), egui::Button::new("Sing the lyrics (AI)")).clicked() { sing_go = true; }
-                        if self.song.is_none() { ui.small("Open a song first (Race tab)."); }
-                        if self.voiced.is_some() && ui.button("Back to the original song").clicked() { self.voiced = None; restart_audio = true; }
-                        let st = self.ai_status.lock().unwrap().clone(); if !st.is_empty() { ui.small(st); }
-                    }
-                    return;
-                }
-                3 => {
-                    if self.tour.is_none() {
-                        ui.label(format!("{} marbles, heats of up to 4, winners advance.", self.n));
-                        if ui.button("Start tournament").clicked() { self.tour = Some(Tour { remaining: (0..self.n).collect(), ..Default::default() }); rebuild = true; }
-                    } else {
-                        let t = self.tour.clone().unwrap();
-                        match t.champion { Some(c) => { ui.colored_label(egui::Color32::GOLD, format!("Champion: {}", self.roster[c].1)); }
-                            None => { ui.label(format!("Round {} · heat {}", t.round + 1, t.heat + 1)); if t.recorded && ui.button("Next heat").clicked() { tour_next = true; } } }
-                        for l in &t.log { ui.small(l); }
-                        if ui.button("Cancel tournament").clicked() { self.tour = None; rebuild = true; }
-                    }
-                    return;
-                }
-                _ => {}
-            }
-            if ui.button("Open song…").clicked() {
-                if let Some(f) = rfd::FileDialog::new().add_filter("audio", &["mp3", "wav", "flac", "ogg", "m4a", "aac"]).pick_file() { load_path = Some(f.to_string_lossy().to_string()); }
-            }
-            ui.label(&self.status);
-            ui.separator();
-            egui::ComboBox::from_label("Map").selected_text(MAPS[self.map].label).show_ui(ui, |ui| {
-                for (i, m) in MAPS.iter().enumerate() { if ui.selectable_value(&mut self.map, i, m.label).changed() { rebuild = true; } }
+                    if let Some((m, t0)) = &self.toast { if t0.elapsed().as_secs() < 5 { muted(ui, m.clone()); } }
+                    ui.label(egui::RichText::new(format!("v{}", update::VERSION)).color(MUTED).size(12.5));
+                });
             });
-            ui.horizontal(|ui| { ui.label("Seed"); if ui.text_edit_singleline(&mut self.seed).lost_focus() { rebuild = true; } });
-            if ui.add(egui::Slider::new(&mut self.n, 2..=8).text("Marbles")).drag_stopped() { rebuild = true; }
-            if ui.add(egui::Slider::new(&mut self.len, 15.0..=180.0).text("Seconds")).drag_stopped() { rebuild = true; }
-            ui.separator();
-            ui.horizontal(|ui| {
-                if ui.button(if self.playing { "Pause" } else { "Play" }).clicked() { self.playing = !self.playing; toggled = true; }
-                if ui.button("Restart").clicked() { self.t = 0.0; self.playing = true; rebuild = true; }
-            });
-            ui.add(egui::Slider::new(&mut self.t, 0.0..=end).text("t"));
-            ui.separator();
-            ui.checkbox(&mut self.hd, "HD 1080x1920");
-            if self.exporting.load(Ordering::Relaxed) {
-                let (p, t) = (self.prog.load(Ordering::Relaxed), self.total.load(Ordering::Relaxed).max(1));
-                ui.add(egui::ProgressBar::new(p as f32 / t as f32).text(format!("Rendering {}%", p * 100 / t)));
-                if ui.button("Cancel").clicked() { self.cancel.store(true, Ordering::SeqCst); }
-            } else if ui.button("Render MP4…").clicked() { export = true; }
-            if let Some(m) = self.result.lock().unwrap().clone() { ui.label(m); }
-            if ui.button("New random seed").clicked() { self.seed = format!("{}", (now.elapsed().subsec_nanos() ^ 0x5bd1e995) % 100000); rebuild = true; }
         });
-        if save { self.save_cfg(); }
-        if sing_go { self.start_sing(); }
-        if restart_audio { let t = self.t; self.start_audio_at(t); }
+
+        // ---- left panel (everything but Settings)
+        if self.tab != 5 {
+            egui::SidePanel::left("left").exact_width(318.0).frame(egui::Frame::none().fill(BG).inner_margin(egui::Margin::same(14.0))).show(ctx, |ui| {
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    match self.tab { 1 => self.cast_left(ui, &mut a), 2 => self.rig_left(ui, &mut a), 3 => self.cup_left(ui, &mut a), 4 => self.voices_left(ui, &mut a), _ => self.studio_left(ui, &mut a) }
+                });
+            });
+        }
+
+        // ---- central
+        let mut scrub_done = false;
+        if self.tab == 5 {
+            egui::CentralPanel::default().frame(egui::Frame::none().fill(BG).inner_margin(egui::Margin::same(20.0))).show(ctx, |ui| self.settings_page(ui, &mut a));
+        } else {
+            // draw the frame before the panel that shows it
+            if let Some(tl) = &self.tl {
+                let sc = Scene { tl, chars: &self.chars, beats: &self.beats, title: "Marbeat", pro_post: false };
+                self.r.draw(&sc, self.t);
+            }
+            let img = egui::ColorImage::from_rgba_premultiplied([self.r.w as usize, self.r.h as usize], self.r.pm.data());
+            match &mut self.tex { Some(t) => t.set(img, egui::TextureOptions::LINEAR), None => self.tex = Some(ctx.load_texture("frame", img, egui::TextureOptions::LINEAR)) }
+            egui::CentralPanel::default().frame(egui::Frame::none().fill(BG).inner_margin(egui::Margin::same(16.0))).show(ctx, |ui| {
+                let avail = ui.available_size();
+                let ph = (avail.y - 74.0).max(100.0);
+                let s = (avail.x / self.r.w as f32).min(ph / self.r.h as f32);
+                let size = egui::vec2(self.r.w as f32 * s, self.r.h as f32 * s);
+                ui.allocate_ui_with_layout(egui::vec2(avail.x, ph), egui::Layout::top_down(egui::Align::Center), |ui| {
+                    ui.add_space(((ph - size.y) / 2.0).max(0.0));
+                    if let Some(t) = &self.tex {
+                        let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+                        ui.painter().rect_filled(rect.expand(3.0), 14.0, EDGE);
+                        egui::Image::new((t.id(), size)).rounding(12.0).paint_at(ui, rect);
+                    }
+                });
+                ui.add_space(8.0);
+                egui::Frame::none().fill(CARD).rounding(12.0).stroke(egui::Stroke::new(1.0, EDGE)).inner_margin(egui::Margin::symmetric(12.0, 8.0)).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal(|ui| {
+                        if primary_w(ui, if self.playing { "Pause" } else { "Play" }, 84.0).clicked() { self.playing = !self.playing; a.toggled = true; }
+                        if ghost(ui, "Restart").clicked() { self.t = 0.0; self.playing = true; a.rebuild = true; }
+                        ui.label(egui::RichText::new(fmt_time(self.t)).monospace());
+                        ui.spacing_mut().slider_width = (ui.available_width() - 70.0).max(60.0);
+                        let r = ui.add(egui::Slider::new(&mut self.t, 0.0..=end).show_value(false));
+                        if r.drag_stopped() { scrub_done = true; }
+                        ui.label(egui::RichText::new(fmt_time(end)).monospace().color(MUTED));
+                    });
+                });
+            });
+        }
+
+        // ---- actions
+        if a.save { self.save_cfg(); }
+        if a.sing_go { self.start_sing(); }
+        if a.restart_audio { let t = self.t; self.start_audio_at(t); }
         let finished = self.ai_out.lock().unwrap().take();
         if let Some(r) = finished {
-            match r { Ok(o) => { *self.ai_status.lock().unwrap() = format!("Done: {} lines sung ({} words heard)", o.lines, o.heard); self.voiced = Some(o.mixed); let t = self.t; self.start_audio_at(t); } Err(e) => *self.ai_status.lock().unwrap() = format!("AI failed: {e}") }
-        }
-        if tour_next { self.tour_next(); rebuild = false; }
-        if self.tour.is_some() && self.tl.as_ref().map(|t| self.t >= t.win_time + 0.5).unwrap_or(false) { self.tour_step(); }
-        if export { self.export(); }
-        if let Some(p) = load_path { self.load(&p); }
-        else if rebuild { self.rebuild(); }
-        if toggled { if let Some(k) = &self.sink { if self.playing { k.play() } else { k.pause() } } }
-        if let Some(tl) = &self.tl {
-            let sc = Scene { tl, chars: &self.chars, beats: &self.beats, title: "Marbeat", pro_post: false };
-            self.r.draw(&sc, self.t);
-        }
-        let img = egui::ColorImage::from_rgba_premultiplied([self.r.w as usize, self.r.h as usize], self.r.pm.data());
-        match &mut self.tex { Some(t) => t.set(img, egui::TextureOptions::LINEAR), None => self.tex = Some(ctx.load_texture("frame", img, egui::TextureOptions::LINEAR)) }
-        egui::CentralPanel::default().show(ctx, |ui| {
-            if let Some(t) = &self.tex {
-                let avail = ui.available_size();
-                let s = (avail.x / self.r.w as f32).min(avail.y / self.r.h as f32);
-                ui.centered_and_justified(|ui| { ui.image((t.id(), egui::vec2(self.r.w as f32 * s, self.r.h as f32 * s))); });
+            match r {
+                Ok(o) => { *self.ai_status.lock().unwrap() = format!("Done: {} lines sung ({} words heard)", o.lines, o.heard); self.voiced = Some(o.mixed); let t = self.t; self.start_audio_at(t); }
+                Err(e) => *self.ai_status.lock().unwrap() = format!("AI failed: {e}"),
             }
-        });
-        ctx.request_repaint();
+        }
+        if a.tour_next { self.tour_next(); a.rebuild = false; }
+        if self.tour.is_some() && self.tl.as_ref().map(|t| self.t >= t.win_time + 0.5).unwrap_or(false) { self.tour_step(); }
+        if a.export { self.export(); }
+        if let Some(p) = a.load_path.take() { self.load(&p); }
+        else if a.rebuild { self.rebuild(); }
+        if scrub_done { self.start_audio(); }
+        if a.toggled { if let Some(k) = &self.sink { if self.playing { k.play() } else { k.pause() } } }
+        if self.tab == 5 { ctx.request_repaint_after(std::time::Duration::from_millis(250)); } else { ctx.request_repaint(); }
     }
 }
+
 
 fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().collect();
@@ -395,5 +667,5 @@ fn main() -> eframe::Result {
         match update::check() { Ok(Some(i)) => { println!("updating to v{}", i.version); if let Err(e) = update::install(&i, |_, _| {}) { eprintln!("failed: {e}"); std::process::exit(1); } } Ok(None) => println!("up to date"), Err(e) => { eprintln!("check failed: {e}"); std::process::exit(1); } }
         return Ok(());
     }
-    eframe::run_native("Marbeat", eframe::NativeOptions { viewport: egui::ViewportBuilder::default().with_inner_size([760.0, 780.0]), ..Default::default() }, Box::new(|_| Ok(Box::new(App::new()))))
+    eframe::run_native("Marbeat", eframe::NativeOptions { viewport: egui::ViewportBuilder::default().with_inner_size([1100.0, 800.0]).with_min_inner_size([900.0, 640.0]), ..Default::default() }, Box::new(|cc| { ui::theme(&cc.egui_ctx); Ok(Box::new(App::new())) }))
 }

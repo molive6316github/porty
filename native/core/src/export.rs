@@ -29,9 +29,14 @@ fn scan(dir: &std::path::Path, exe: &str, depth: u32, deadline: std::time::Insta
     subs.sort_by_key(|p| { let l = p.to_string_lossy().to_lowercase(); if l.contains("ffmpeg") || l.ends_with("bin") { 0 } else { 1 } });
     for s in subs { scan(&s, exe, depth - 1, deadline, out); }
 }
+static OVERRIDE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+pub fn set_ffmpeg_override(p: Option<String>) { *OVERRIDE.lock().unwrap() = p.filter(|s| !s.trim().is_empty()); }
+pub fn forget_ffmpeg_cache() { let _ = std::fs::remove_file(cache_file()); }
+pub fn ffmpeg_works(p: &str) -> bool { works(p) }
 /// Looks for ffmpeg everywhere sensible on this machine and remembers what it found.
 pub fn find_ffmpeg() -> Option<String> {
     let exe = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
+    if let Some(p) = OVERRIDE.lock().unwrap().clone() { if works(&p) { return Some(p); } }
     if let Ok(t) = std::fs::read_to_string(cache_file()) { let t = t.trim(); if !t.is_empty() && std::path::Path::new(t).exists() && works(t) { return Some(t.into()); } }
     let remember = |p: &str| { let f = cache_file(); if let Some(d) = f.parent() { let _ = std::fs::create_dir_all(d); } let _ = std::fs::write(f, p); p.to_string() };
     if let Ok(p) = std::env::var("MARBEAT_FFMPEG") { if works(&p) { return Some(remember(&p)); } }

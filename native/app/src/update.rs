@@ -2,7 +2,7 @@
 use sha2::{Digest, Sha256};
 use std::io::Read;
 
-pub const VERSION: u32 = 4; // bump with every release; native.json "version" > this means an update exists
+pub const VERSION: u32 = 5; // bump with every release; native.json "version" > this means an update exists
 const DEFAULT_URL: &str = "https://assets.molive6316.com/marbeat/native.json";
 
 #[derive(Clone, Debug)]
@@ -13,7 +13,10 @@ pub struct Info {
     pub sha256: String,
 }
 
-fn manifest_url() -> String { std::env::var("MARBEAT_UPDATE_URL").unwrap_or_else(|_| DEFAULT_URL.into()) }
+static URL: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+pub fn set_url(u: Option<String>) { *URL.lock().unwrap() = u.filter(|s| !s.trim().is_empty()); }
+pub fn default_url() -> &'static str { DEFAULT_URL }
+fn manifest_url() -> String { std::env::var("MARBEAT_UPDATE_URL").ok().or_else(|| URL.lock().unwrap().clone()).unwrap_or_else(|| DEFAULT_URL.into()) }
 
 pub fn check() -> Result<Option<Info>, String> {
     let agent = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(15)).build();
