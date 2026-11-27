@@ -4,7 +4,7 @@
 set -e
 cd "$(dirname "$0")/../native"
 echo "running tests..."
-cargo test --release -p marbeat-core || { echo "TESTS FAILED, not releasing"; exit 1; }
+cargo test --release -p marbeat-core -p marbeat || { echo "TESTS FAILED, not releasing"; exit 1; }
 cargo zigbuild --release --target x86_64-pc-windows-gnu -p marbeat
 OUT=${ASSETS_DIR:-../../assets}/marbeat
 EXE=target/x86_64-pc-windows-gnu/release/marbeat.exe

@@ -1,4 +1,5 @@
 mod ai;
+mod projects;
 mod tools;
 mod ui;
 mod update;
@@ -93,7 +94,21 @@ struct App {
     story: Option<StoryRun>,
     story_name: String,
     race_title: String,
+    audio_t0: f64,                 // race time the current audio sink started at (the clock follows the audio)
+    proj_path: Option<std::path::PathBuf>,
+    proj_name: String,
+    proj_dirty: bool,
+    proj_story: String,            // story script attached to this project
+    proj_rename: Option<(std::path::PathBuf, String)>,
+    proj_del: Option<std::path::PathBuf>,
+    new_name: String,
+    st_edit: Option<StoryEdit>,
+    st_del: Option<std::path::PathBuf>,
+    lists: Option<(Vec<projects::Entry>, Vec<projects::Entry>, Instant)>,
 }
+
+/// a story script open in the editor
+struct StoryEdit { path: Option<std::path::PathBuf>, name: String, text: String, saved: String }
 
 /// A lyric line being checked by the human before it goes on screen.
 #[derive(Clone)]
@@ -117,13 +132,14 @@ fn cfg_path() -> std::path::PathBuf {
 impl App {
     fn new() -> Self {
         let mut a = App { map: 0, seed: "42".into(), n: 6, len: 40.0, tl: None, beats: (0..2000).map(|i| i as f64 * 0.5).collect(), chars: vec![], r: Renderer::new(405, 720), tex: None, t: 0.0, playing: true, last: Instant::now(), song: None, status: "No song loaded".into(), _stream: OutputStream::try_default().ok(), sink: None, prog: Default::default(), total: Default::default(), cancel: Default::default(), exporting: Default::default(), result: Default::default(), hd: true, upd: Default::default(), upd_msg: Default::default(), upd_busy: Default::default(),
-            roster: (0..8).map(|i| (COLS[i], NAMES[i].to_string())).collect(), rig: false, plan: vec![], rig_winner: None, active: vec![], eff_seed: String::new(), tour: None, tab: 0, spk: vec![10, 25, 40, 60, 75, 90, 5, 100], clones: vec![None; 8], lyrics: String::new(), voiced: None, ai_status: Default::default(), ai_busy: Default::default(), ai_out: Default::default(), auto_update: true, update_url: String::new(), ffmpeg_path: String::new(), ff_found: Default::default(), ff_busy: Default::default(), upd_checking: Default::default(), upd_got: Default::default(), upd_total: Default::default(), toast: None, confirm_del: false, confirm_reset: false, ff_dl: Default::default(), ff_got: Default::default(), ff_total: Default::default(), ff_msg: Default::default(), singing: false, crowd: false, sync_style: 0, sync_music: true, av_offset_ms: 0, show_lyrics: true, song_path: String::new(), lyric_lines: vec![], lyr_draft: None, lyr_paste: String::new(), lyr_busy: Default::default(), lyr_status: Default::default(), lyr_out: Default::default(), cur_plan: vec![], cur_winner: None, cur_len: 40.0, cur_bars: vec![], cur_compose: false, story: None, story_name: String::new(), race_title: "Marbeat".into() };
+            roster: (0..8).map(|i| (COLS[i], NAMES[i].to_string())).collect(), rig: false, plan: vec![], rig_winner: None, active: vec![], eff_seed: String::new(), tour: None, tab: 0, spk: vec![10, 25, 40, 60, 75, 90, 5, 100], clones: vec![None; 8], lyrics: String::new(), voiced: None, ai_status: Default::default(), ai_busy: Default::default(), ai_out: Default::default(), auto_update: true, update_url: String::new(), ffmpeg_path: String::new(), ff_found: Default::default(), ff_busy: Default::default(), upd_checking: Default::default(), upd_got: Default::default(), upd_total: Default::default(), toast: None, confirm_del: false, confirm_reset: false, ff_dl: Default::default(), ff_got: Default::default(), ff_total: Default::default(), ff_msg: Default::default(), singing: false, crowd: false, sync_style: 1, sync_music: true, av_offset_ms: 0, show_lyrics: true, song_path: String::new(), lyric_lines: vec![], lyr_draft: None, lyr_paste: String::new(), lyr_busy: Default::default(), lyr_status: Default::default(), lyr_out: Default::default(), cur_plan: vec![], cur_winner: None, cur_len: 40.0, cur_bars: vec![], cur_compose: false, story: None, story_name: String::new(), race_title: "Marbeat".into(), audio_t0: 0.0, proj_path: None, proj_name: String::new(), proj_dirty: false, proj_story: String::new(), proj_rename: None, proj_del: None, new_name: String::new(), st_edit: None, st_del: None, lists: None };
         a.load_cfg();
         update::set_url(Some(a.update_url.clone()));
         marbeat_core::export::set_ffmpeg_override(Some(a.ffmpeg_path.clone()));
         if a.auto_update { a.check_updates(); }
         if let Ok(sp) = std::env::var("MARBEAT_SONG") { a.load(&sp); if std::env::var("MARBEAT_DETECT").is_ok() { a.start_detect(None); } }
         if std::env::var("MARBEAT_STORY").is_ok() { let src = include_str!("../../assets/demo.story"); a.start_story(src, "Demo"); }
+        if std::env::var("MARBEAT_SONG").is_err() { if let Some(p) = a.proj_path.clone() { a.open_project(&p); } }
         a.detect_ffmpeg();
         if let Ok(t) = std::env::var("MARBEAT_TAB") { a.tab = t.parse().unwrap_or(0); }
         update::cleanup_old();
@@ -137,6 +153,7 @@ impl App {
             if let Ok(sink) = Sink::try_new(h) {
                 let skip = (self.t * song.sr as f64) as usize * 2;
                 if skip < stereo.len() {
+                    self.audio_t0 = self.t;
                     sink.append(SamplesBuffer::new(2, song.sr, stereo[skip..].to_vec()));
                     if !self.playing { sink.pause(); }
                     self.sink = Some(sink);
@@ -204,7 +221,8 @@ impl App {
                 if let Some(x) = j["singing"].as_bool() { self.singing = x; }
                 if let Some(x) = j["sync_music"].as_bool() { self.sync_music = x; }
                 if let Some(x) = j["crowd"].as_bool() { self.crowd = x; }
-                if let Some(x) = j["sync_style"].as_u64() { self.sync_style = (x as u8).min(1); }
+                if let Some(x) = j["sync_style"].as_u64() { if j["v15_lanes"].as_bool().unwrap_or(false) { self.sync_style = (x as u8).min(1); } }
+                if let Some(x) = j["last_project"].as_str() { let p = std::path::PathBuf::from(x); if p.exists() { self.proj_path = Some(p); } }
                 if let Some(x) = j["show_lyrics"].as_bool() { self.show_lyrics = x; }
                 if let Some(x) = j["av_offset_ms"].as_i64() { self.av_offset_ms = x as i32; }
                 if let Some(x) = j["hd"].as_bool() { self.hd = x; }
@@ -217,7 +235,7 @@ impl App {
     }
     fn save_cfg(&self) {
         if self.story.is_some() { return; }
-        let j = serde_json::json!({"roster": self.roster.iter().map(|(c, n)| serde_json::json!({"name": n, "color": c})).collect::<Vec<_>>(), "auto_update": self.auto_update, "update_url": self.update_url, "ffmpeg_path": self.ffmpeg_path, "hd": self.hd, "singing": self.singing, "sync_music": self.sync_music, "crowd": self.crowd, "sync_style": self.sync_style, "show_lyrics": self.show_lyrics, "av_offset_ms": self.av_offset_ms, "speakers": self.spk, "clones": self.clones, "lyrics": self.lyrics, "seed": self.seed, "n": self.n, "map": self.map});
+        let j = serde_json::json!({"roster": self.roster.iter().map(|(c, n)| serde_json::json!({"name": n, "color": c})).collect::<Vec<_>>(), "auto_update": self.auto_update, "update_url": self.update_url, "ffmpeg_path": self.ffmpeg_path, "hd": self.hd, "singing": self.singing, "sync_music": self.sync_music, "crowd": self.crowd, "sync_style": self.sync_style, "show_lyrics": self.show_lyrics, "av_offset_ms": self.av_offset_ms, "speakers": self.spk, "clones": self.clones, "lyrics": self.lyrics, "seed": self.seed, "n": self.n, "map": self.map, "v15_lanes": true, "last_project": self.proj_path.as_ref().map(|p| p.to_string_lossy().to_string())});
         let _ = std::fs::write(cfg_path(), j.to_string());
     }
     fn check_updates(&self) {
@@ -337,27 +355,261 @@ impl App {
         self.playing = true;
         if self.song.is_some() { self.start_audio(); }
     }
+    // ---------------- projects
+    fn project_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "format": 1, "name": self.proj_name, "song_path": self.song_path, "seed": self.seed, "n": self.n, "map": MAPS[self.map].key, "len": self.len,
+            "roster": self.roster.iter().map(|(c, n)| serde_json::json!({"name": n, "color": c})).collect::<Vec<_>>(),
+            "speakers": self.spk, "clones": self.clones, "singing": self.singing, "lyrics": self.lyrics,
+            "rig": self.rig, "rig_winner": self.rig_winner, "plan": self.plan,
+            "sync_music": self.sync_music, "sync_style": self.sync_style, "crowd": self.crowd, "show_lyrics": self.show_lyrics, "hd": self.hd,
+            "lyric_lines": self.lyric_lines.iter().map(|l| serde_json::json!({"t0": l.t0, "t1": l.t1, "words": l.words})).collect::<Vec<_>>(),
+            "story": self.proj_story,
+        })
+    }
+    fn save_project(&mut self) {
+        if self.story.is_some() { self.say("Stop the story first, then save."); return; }
+        if self.proj_name.trim().is_empty() {
+            self.proj_name = if self.song_path.is_empty() { "My race".into() } else { std::path::Path::new(&self.song_path).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or("My race".into()) };
+        }
+        let d = projects::projects_dir();
+        let path = match &self.proj_path { Some(p) => p.clone(), None => projects::free_path(&d, &self.proj_name, "marbeat", None) };
+        self.proj_name = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        match std::fs::write(&path, serde_json::to_string_pretty(&self.project_json()).unwrap()) {
+            Ok(_) => { self.proj_path = Some(path); self.proj_dirty = false; self.lists = None; self.save_cfg(); }
+            Err(e) => self.say(format!("Couldn't save the project: {e}")),
+        }
+    }
+    fn open_project(&mut self, path: &std::path::Path) {
+        let j: serde_json::Value = match std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str(&t).ok()) { Some(j) => j, None => { self.say("That project file couldn't be read."); return; } };
+        self.stop_story(); self.tour = None; self.voiced = None; self.sink = None;
+        if let Some(r) = j["roster"].as_array() { for (i, v) in r.iter().enumerate().take(8) { if let (Some(n), Some(c)) = (v["name"].as_str(), v["color"].as_array()) { self.roster[i] = ([c.first().and_then(|x| x.as_u64()).unwrap_or(255) as u8, c.get(1).and_then(|x| x.as_u64()).unwrap_or(255) as u8, c.get(2).and_then(|x| x.as_u64()).unwrap_or(255) as u8], n.to_string()); } } }
+        if let Some(a) = j["speakers"].as_array() { for (i, v) in a.iter().enumerate().take(8) { if let Some(x) = v.as_i64() { self.spk[i] = x; } } }
+        if let Some(a) = j["clones"].as_array() { for (i, v) in a.iter().enumerate().take(8) { self.clones[i] = v.as_str().map(|x| x.to_string()); } }
+        self.seed = j["seed"].as_str().unwrap_or("42").into();
+        self.n = (j["n"].as_u64().unwrap_or(6) as usize).clamp(2, 8);
+        self.map = j["map"].as_str().and_then(|k| MAPS.iter().position(|m| m.key == k)).unwrap_or(0);
+        self.singing = j["singing"].as_bool().unwrap_or(false);
+        self.lyrics = j["lyrics"].as_str().unwrap_or("").into();
+        self.rig = j["rig"].as_bool().unwrap_or(false);
+        self.rig_winner = j["rig_winner"].as_u64().map(|x| x as usize);
+        self.plan = j["plan"].as_array().map(|a| a.iter().filter_map(|p| Some((p[0].as_f64()?, p[1].as_u64()? as usize))).collect()).unwrap_or_default();
+        self.sync_music = j["sync_music"].as_bool().unwrap_or(true);
+        self.sync_style = (j["sync_style"].as_u64().unwrap_or(1) as u8).min(1);
+        self.crowd = j["crowd"].as_bool().unwrap_or(false);
+        self.show_lyrics = j["show_lyrics"].as_bool().unwrap_or(true);
+        if let Some(h) = j["hd"].as_bool() { self.hd = h; }
+        self.proj_story = j["story"].as_str().unwrap_or("").into();
+        self.proj_name = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        self.proj_path = Some(path.to_path_buf());
+        let song = j["song_path"].as_str().unwrap_or("").to_string();
+        if !song.is_empty() && std::path::Path::new(&song).exists() { self.load(&song); }
+        else {
+            self.song = None; self.song_path = String::new(); self.beats = (0..2000).map(|i| i as f64 * 0.5).collect();
+            self.status = if song.is_empty() { "No song loaded".into() } else { format!("Song missing: {song}") };
+            if !song.is_empty() { self.say("This project's song file has moved. Open it again from Studio."); }
+        }
+        if let Some(len) = j["len"].as_f64() { if self.song.is_none() { self.len = len as f32; } }
+        // lyrics travel with the project, so it still works if the lyric store was cleared
+        if let Some(ls) = j["lyric_lines"].as_array() { if !ls.is_empty() {
+            self.lyric_lines = ls.iter().map(|l| LyricLine { t0: l["t0"].as_f64().unwrap_or(0.0), t1: l["t1"].as_f64().unwrap_or(0.0), words: l["words"].as_array().map(|w| w.iter().map(|p| (p[0].as_str().unwrap_or("").to_string(), p[1].as_f64().unwrap_or(0.0))).collect()).unwrap_or_default() }).collect();
+        } }
+        self.t = 0.0; self.playing = false;
+        self.rebuild();
+        self.proj_dirty = false;
+        self.save_cfg();
+    }
+    fn new_project(&mut self, name: &str) {
+        self.stop_story(); self.tour = None; self.voiced = None; self.sink = None;
+        self.song = None; self.song_path.clear(); self.status = "No song loaded".into(); self.beats = (0..2000).map(|i| i as f64 * 0.5).collect();
+        self.lyric_lines.clear(); self.lyrics.clear(); self.plan.clear(); self.rig = false; self.rig_winner = None; self.proj_story.clear();
+        self.seed = rand_seed(); self.len = 40.0; self.t = 0.0;
+        self.proj_path = None; self.proj_name = if name.trim().is_empty() { "New race".into() } else { name.trim().to_string() };
+        self.rebuild();
+        self.save_project();
+        self.tab = 0;
+    }
+    fn refresh_lists(&mut self) -> bool {
+        let stale = self.lists.as_ref().map(|l| l.2.elapsed().as_secs() > 3).unwrap_or(true);
+        if stale { self.lists = Some((projects::list_projects(), projects::list_stories(), Instant::now())); }
+        true
+    }
+    fn projects_left(&mut self, ui: &mut egui::Ui, a: &mut Acts) {
+        let _ = a;
+        self.refresh_lists();
+        card(ui, "This project", |ui| {
+            ui.horizontal(|ui| {
+                let r = ui.add(egui::TextEdit::singleline(&mut self.proj_name).hint_text("Name this project").desired_width(ui.available_width() - 70.0));
+                if r.lost_focus() && self.proj_path.is_some() {
+                    // rename the file to match
+                    let old = self.proj_path.clone().unwrap();
+                    let np = projects::free_path(&projects::projects_dir(), &self.proj_name, "marbeat", Some(&old));
+                    if np != old && std::fs::rename(&old, &np).is_ok() { self.proj_path = Some(np); }
+                    self.save_project();
+                }
+                if primary_w(ui, "Save", 60.0).clicked() { self.save_project(); self.say("Saved"); }
+            });
+            match &self.proj_path {
+                Some(_) => muted(ui, if self.proj_dirty { "Unsaved changes. Ctrl+S saves." } else { "Saved. Changes save automatically." }),
+                None => muted(ui, "Not saved yet. Save to keep this race, its cast, lyrics and story."),
+            }
+            if self.proj_path.is_some() && ghost(ui, "Save a copy").clicked() {
+                self.proj_path = None; self.proj_name = format!("{} copy", self.proj_name); self.save_project(); self.say("Copy saved");
+            }
+        });
+        card(ui, "New project", |ui| {
+            ui.horizontal(|ui| {
+                ui.add(egui::TextEdit::singleline(&mut self.new_name).hint_text("Name").desired_width(ui.available_width() - 76.0));
+                if primary_w(ui, "Create", 66.0).clicked() { if self.proj_dirty && self.proj_path.is_some() { self.save_project(); } let n = std::mem::take(&mut self.new_name); self.new_project(&n); }
+            });
+            muted(ui, "Starts fresh: no song, new seed. Your cast and settings carry over.");
+        });
+        let projs = self.lists.as_ref().map(|l| l.0.iter().map(|e| (e.name.clone(), e.path.clone(), e.info.clone(), projects::ago(e.modified))).collect::<Vec<_>>()).unwrap_or_default();
+        card(ui, &format!("All projects ({})", projs.len()), |ui| {
+            if projs.is_empty() { muted(ui, "Nothing saved yet."); }
+            for (name, path, info, when) in projs {
+                let current = self.proj_path.as_ref() == Some(&path);
+                egui::Frame::none().fill(if current { ACCENT.gamma_multiply(0.16) } else { CARD2 }).rounding(10.0).stroke(egui::Stroke::new(1.0, if current { ACCENT } else { EDGE })).inner_margin(egui::Margin::same(10.0)).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    if let Some((rp, rn)) = &mut self.proj_rename { if *rp == path {
+                        let r = ui.add(egui::TextEdit::singleline(rn).desired_width(ui.available_width()));
+                        if r.lost_focus() {
+                            let np = projects::free_path(&projects::projects_dir(), rn, "marbeat", Some(&path));
+                            if std::fs::rename(&path, &np).is_ok() && current { self.proj_path = Some(np.clone()); self.proj_name = np.file_stem().unwrap().to_string_lossy().to_string(); }
+                            self.proj_rename = None; self.lists = None;
+                        }
+                        return;
+                    } }
+                    ui.label(egui::RichText::new(&name).strong());
+                    muted(ui, format!("{info} · {when}"));
+                    ui.horizontal_wrapped(|ui| {
+                        if !current && ui.small_button("Open").clicked() { if self.proj_dirty && self.proj_path.is_some() { self.save_project(); } self.open_project(&path); }
+                        if current { badge(ui, "open", MINT); }
+                        if ui.small_button("Rename").clicked() { self.proj_rename = Some((path.clone(), name.clone())); }
+                        if ui.small_button("Duplicate").clicked() { let np = projects::free_path(&projects::projects_dir(), &format!("{name} copy"), "marbeat", None); let _ = std::fs::copy(&path, &np); self.lists = None; }
+                        if self.proj_del.as_ref() == Some(&path) {
+                            if ui.add(egui::Button::new(egui::RichText::new("Really delete").color(egui::Color32::WHITE)).fill(BAD).small()).clicked() {
+                                let _ = std::fs::remove_file(&path); if current { self.proj_path = None; self.proj_dirty = true; } self.proj_del = None; self.lists = None;
+                            }
+                        } else if ui.small_button("Delete").clicked() { self.proj_del = Some(path.clone()); }
+                    });
+                });
+            }
+            if ghost(ui, "Show the folder").clicked() { let _ = open_folder(&projects::projects_dir()); }
+        });
+    }
+
+    // ---------------- stories
+    fn save_story_edit(&mut self) {
+        let Some(ed) = &mut self.st_edit else { return };
+        let d = projects::stories_dir();
+        let np = projects::free_path(&d, &ed.name, "story", ed.path.as_deref());
+        if let Some(old) = &ed.path { if *old != np { let _ = std::fs::rename(old, &np); } }
+        match std::fs::write(&np, &ed.text) {
+            Ok(_) => { ed.name = np.file_stem().unwrap().to_string_lossy().to_string(); ed.path = Some(np); ed.saved = ed.text.clone(); self.lists = None; self.say("Story saved"); }
+            Err(e) => self.say(format!("Couldn't save the story: {e}")),
+        }
+    }
     fn story_left(&mut self, ui: &mut egui::Ui, a: &mut Acts) {
         let _ = a;
-        card(ui, "Story", |ui| {
-            if let Some(run) = &self.story {
-                let (i, n) = run.player.progress();
+        self.refresh_lists();
+        if let Some(run) = &self.story {
+            let (i, n) = run.player.progress();
+            card(ui, "Now playing", |ui| {
                 ui.label(egui::RichText::new(self.story_name.clone()).strong());
                 ui.add(egui::ProgressBar::new(i as f32 / n.max(1) as f32).text(format!("{} / {}", i, n)).fill(ACCENT));
                 muted(ui, "Space, Enter or a click moves on. A race can't be skipped.");
-                if ghost(ui, "Stop story").clicked() { self.stop_story(); }
-            } else {
-                muted(ui, "Plays a story script: typewriter dialogue with a different text sound per character, and races as story moments.");
-                if primary(ui, "Play the demo script").clicked() { let src = include_str!("../../assets/demo.story"); self.start_story(src, "Demo"); }
-                if ghost(ui, "Open a script…").clicked() {
+            });
+            if ghost(ui, "Stop story").clicked() { self.stop_story(); }
+            return;
+        }
+        // ---- editor
+        if self.st_edit.is_some() {
+            let mut close = false; let mut play = false; let mut save = false; let mut attach = false;
+            card(ui, "Edit story", |ui| {
+                let ed = self.st_edit.as_mut().unwrap();
+                ui.add(egui::TextEdit::singleline(&mut ed.name).hint_text("Story name").desired_width(ui.available_width()));
+                let parsed = story::parse(&ed.text);
+                let chars = parsed.chars.iter().filter(|c| c.name != "Narrator").count();
+                let races = ed.text.lines().filter(|l| l.trim_start().starts_with("@race")).count();
+                muted(ui, format!("{} lines · {} characters · {} race{}{}", parsed.beats.len(), chars, races, if races == 1 { "" } else { "s" }, if ed.text != ed.saved { " · unsaved" } else { "" }));
+                if let Some(e) = parsed.errors.first() { ui.label(egui::RichText::new(format!("⚠ {e}")).color(WARN).size(12.5)); }
+                ui.horizontal_wrapped(|ui| {
+                    if primary_w(ui, "Save", 64.0).clicked() { save = true; }
+                    if ghost(ui, "▶ Play").clicked() { play = true; }
+                    if ghost(ui, "Attach to project").on_hover_text("Saves this script inside the current project").clicked() { attach = true; }
+                    if ghost(ui, "Close").clicked() { close = true; }
+                });
+            });
+            card(ui, "Script", |ui| {
+                let ed = self.st_edit.as_mut().unwrap();
+                egui::ScrollArea::vertical().max_height(420.0).id_salt("st_scroll").show(ui, |ui| {
+                    ui.add(egui::TextEdit::multiline(&mut ed.text).code_editor().desired_rows(22).desired_width(f32::INFINITY));
+                });
+                if ui.small_button("+ character").clicked() { ed.text.push_str("\n@char Name color=#ffffff blip=sine pitch=440 speed=1.0\n"); }
+                if ui.small_button("+ race").clicked() { ed.text.push_str("\n@race map=neon seed=new marbles=Ruby,Azure winner=Ruby len=30\n"); }
+                if ui.small_button("+ pause").clicked() { ed.text.push_str("\n@wait 1.5\n"); }
+            });
+            self.script_help(ui);
+            if save { self.save_story_edit(); }
+            if attach { self.proj_story = self.st_edit.as_ref().unwrap().text.clone(); self.proj_dirty = true; if self.proj_path.is_some() { self.save_project(); } self.say("Attached to this project"); }
+            if play { let (t, n) = { let e = self.st_edit.as_ref().unwrap(); (e.text.clone(), e.name.clone()) }; self.start_story(&t, &n); }
+            if close { self.st_edit = None; }
+            return;
+        }
+        // ---- library
+        card(ui, "Story", |ui| {
+            muted(ui, "Typewriter dialogue with a different text sound per character, and races as story moments.");
+            if primary(ui, "New story").clicked() { self.st_edit = Some(StoryEdit { path: None, name: "My story".into(), text: projects::STORY_TEMPLATE.into(), saved: String::new() }); }
+            ui.horizontal(|ui| {
+                if ghost(ui, "Play demo").clicked() { let src = include_str!("../../assets/demo.story"); self.start_story(src, "Demo"); }
+                if ghost(ui, "Import file…").clicked() {
                     if let Some(f) = rfd::FileDialog::new().add_filter("story script", &["story", "txt"]).pick_file() {
-                        match std::fs::read_to_string(&f) { Ok(t) => { let n = f.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or("Story".into()); self.start_story(&t, &n); } Err(e) => self.say(format!("Couldn't read that file: {e}")) }
+                        match std::fs::read_to_string(&f) {
+                            Ok(t) => { let n = f.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or("Story".into()); self.st_edit = Some(StoryEdit { path: None, name: n, text: t, saved: String::new() }); self.save_story_edit(); }
+                            Err(e) => self.say(format!("Couldn't read that file: {e}")),
+                        }
                     }
                 }
-            }
+            });
         });
-        card(ui, "Script format", |ui| {
-            muted(ui, "@char Ruby color=#ff5a5a blip=square pitch=520 speed=1.0\n@race map=neon seed=ritual marbles=Ruby,Azure winner=Ruby len=40\n@wait 1.5\nRuby: Hello. {p} Ready?\n* Narration starts with a star.\n\n{p} = short pause, {winner} = last race's winner.\nBlip sounds: square, triangle, saw, sine, pulse, noise.".replace("\\n", "\n"));
+        if !self.proj_story.trim().is_empty() {
+            card(ui, "In this project", |ui| {
+                let lines = self.proj_story.lines().filter(|l| !l.trim().is_empty() && !l.trim_start().starts_with('@')).count();
+                muted(ui, format!("{lines} line{} attached to {}", if lines == 1 { "" } else { "s" }, if self.proj_name.is_empty() { "this project" } else { &self.proj_name }));
+                ui.horizontal(|ui| {
+                    if primary_w(ui, "▶ Play", 80.0).clicked() { let t = self.proj_story.clone(); let n = self.proj_name.clone(); self.start_story(&t, &n); }
+                    if ghost(ui, "Edit").clicked() { self.st_edit = Some(StoryEdit { path: None, name: self.proj_name.clone(), text: self.proj_story.clone(), saved: String::new() }); }
+                    if ghost(ui, "Detach").clicked() { self.proj_story.clear(); self.proj_dirty = true; if self.proj_path.is_some() { self.save_project(); } }
+                });
+            });
+        }
+        let sts = self.lists.as_ref().map(|l| l.1.iter().map(|e| (e.name.clone(), e.path.clone(), e.info.clone(), projects::ago(e.modified))).collect::<Vec<_>>()).unwrap_or_default();
+        card(ui, &format!("Saved stories ({})", sts.len()), |ui| {
+            if sts.is_empty() { muted(ui, "Nothing saved yet. Hit New story."); }
+            for (name, path, info, when) in sts {
+                egui::Frame::none().fill(CARD2).rounding(10.0).stroke(egui::Stroke::new(1.0, EDGE)).inner_margin(egui::Margin::same(10.0)).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(egui::RichText::new(&name).strong());
+                    muted(ui, format!("{info} · {when}"));
+                    ui.horizontal_wrapped(|ui| {
+                        let text = || std::fs::read_to_string(&path).unwrap_or_default();
+                        if ui.small_button("▶ Play").clicked() { let t = text(); self.start_story(&t, &name); }
+                        if ui.small_button("Edit").clicked() { let t = text(); self.st_edit = Some(StoryEdit { path: Some(path.clone()), name: name.clone(), saved: t.clone(), text: t }); }
+                        if ui.small_button("Duplicate").clicked() { let np = projects::free_path(&projects::stories_dir(), &format!("{name} copy"), "story", None); let _ = std::fs::copy(&path, &np); self.lists = None; }
+                        if self.st_del.as_ref() == Some(&path) {
+                            if ui.add(egui::Button::new(egui::RichText::new("Really delete").color(egui::Color32::WHITE)).fill(BAD).small()).clicked() { let _ = std::fs::remove_file(&path); self.st_del = None; self.lists = None; }
+                        } else if ui.small_button("Delete").clicked() { self.st_del = Some(path.clone()); }
+                    });
+                });
+            }
+            if ghost(ui, "Show the folder").clicked() { let _ = open_folder(&projects::stories_dir()); }
+        });
+        self.script_help(ui);
+    }
+    fn script_help(&self, ui: &mut egui::Ui) {
+        egui::CollapsingHeader::new(egui::RichText::new("Script format").color(MUTED)).id_salt("sfmt").show(ui, |ui| {
+            muted(ui, "@char Ruby color=#ff5a5a blip=square pitch=520 speed=1.0\n@race map=neon seed=ritual marbles=Ruby,Azure winner=Ruby len=40\n@wait 1.5\nRuby: Hello. {p} Ready?\n* Narration starts with a star.\n\n{p} = short pause, {winner} = last race's winner.\nBlip sounds: square, triangle, saw, sine, pulse, noise.");
         });
     }
     fn start_audio_at(&mut self, t: f64) { let keep = self.t; self.t = t; self.start_audio(); self.t = keep; }
@@ -890,7 +1142,13 @@ impl eframe::App for App {
         self.last = now;
         let end = self.tl.as_ref().map(|t| t.win_time + 5.0).unwrap_or(1.0);
         if self.playing {
-            self.t += dt;
+            // follow the audio: the picture is driven by how much music has actually been played, so it can't drift away from it
+            let audio = self.sink.as_ref().filter(|k| !k.empty() && !k.is_paused()).map(|k| self.audio_t0 + k.get_pos().as_secs_f64());
+            match audio {
+                Some(at) if (at - (self.t + dt)).abs() > 0.08 => self.t = at,
+                Some(at) => self.t += dt + (at - (self.t + dt)) * 0.15,
+                None => self.t += dt,
+            }
             if self.t > end { self.t = end; self.playing = false; }
         }
         let mut a = Acts::default();
@@ -921,7 +1179,7 @@ impl eframe::App for App {
                 ui.painter().circle_filled(r.center() + egui::vec2(-4.0, -4.0), 3.6, egui::Color32::from_white_alpha(200));
                 ui.label(egui::RichText::new("Marbeat").size(20.0).strong());
                 ui.add_space(18.0);
-                for (i, l) in [(0u8, "Studio"), (7, "Lyrics"), (1, "Cast"), (2, "Director"), (3, "Tournament"), (5, "Story"), (4, "Voices"), (6, "Settings")] {
+                for (i, l) in [(8u8, "Projects"), (0u8, "Studio"), (7, "Lyrics"), (1, "Cast"), (2, "Director"), (3, "Tournament"), (5, "Story"), (4, "Voices"), (6, "Settings")] {
                     if tab(ui, self.tab == i, l) { self.tab = i; }
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -930,6 +1188,8 @@ impl eframe::App for App {
                     }
                     if let Some((m, t0)) = &self.toast { if t0.elapsed().as_secs() < 5 { muted(ui, m.clone()); } }
                     ui.label(egui::RichText::new(format!("v{}", update::VERSION)).color(MUTED).size(12.5));
+                    let pn = if self.proj_name.is_empty() { "Unsaved project".to_string() } else { format!("{}{}", self.proj_name, if self.proj_dirty { " •" } else { "" }) };
+                    if ui.add(egui::Button::new(egui::RichText::new(pn).color(TEXT)).fill(CARD2).rounding(16.0)).on_hover_text("Ctrl+S saves. Click for all projects.").clicked() { self.tab = 8; }
                 });
             });
         });
@@ -938,7 +1198,7 @@ impl eframe::App for App {
         if self.tab != 6 {
             egui::SidePanel::left("left").exact_width(318.0).frame(egui::Frame::none().fill(BG).inner_margin(egui::Margin::same(14.0))).show(ctx, |ui| {
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                    match self.tab { 1 => self.cast_left(ui, &mut a), 2 => self.rig_left(ui, &mut a), 3 => self.cup_left(ui, &mut a), 4 => self.voices_left(ui, &mut a), 5 => self.story_left(ui, &mut a), 7 => self.lyrics_left(ui, &mut a), _ => self.studio_left(ui, &mut a) }
+                    match self.tab { 1 => self.cast_left(ui, &mut a), 2 => self.rig_left(ui, &mut a), 3 => self.cup_left(ui, &mut a), 4 => self.voices_left(ui, &mut a), 5 => self.story_left(ui, &mut a), 8 => self.projects_left(ui, &mut a), 7 => self.lyrics_left(ui, &mut a), _ => self.studio_left(ui, &mut a) }
                 });
             });
         }
@@ -1015,7 +1275,12 @@ impl eframe::App for App {
             }
         }
         if click_adv { if let Some(run) = &mut self.story { let evs = run.player.advance(); self.story_events(evs); } }
+        let (ctrl_s, space) = ctx.input(|i| (i.modifiers.command && i.key_pressed(egui::Key::S), i.key_pressed(egui::Key::Space)));
+        if ctrl_s { if self.tab == 5 && self.st_edit.is_some() { self.save_story_edit(); } else { self.save_project(); } }
+        if space && self.story.is_none() && !ctx.wants_keyboard_input() && self.tab != 6 { self.playing = !self.playing; a.toggled = true; }
+        if a.save || a.rebuild || a.load_path.is_some() { if self.story.is_none() { self.proj_dirty = true; } }
         if a.save { self.save_cfg(); }
+        if self.proj_dirty && self.proj_path.is_some() && self.story.is_none() && !ctx.wants_keyboard_input() && !self.exporting.load(Ordering::Relaxed) { self.save_project(); }
         if a.sing_go { self.start_sing(); }
         if a.restart_audio { let t = self.t; self.start_audio_at(t); }
         let finished = self.ai_out.lock().unwrap().take();
@@ -1036,6 +1301,11 @@ impl eframe::App for App {
     }
 }
 
+
+fn open_folder(p: &std::path::Path) -> std::io::Result<std::process::Child> {
+    #[cfg(windows)] { std::process::Command::new("explorer").arg(p).spawn() }
+    #[cfg(not(windows))] { std::process::Command::new("xdg-open").arg(p).spawn() }
+}
 
 fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().collect();
