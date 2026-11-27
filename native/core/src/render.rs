@@ -16,6 +16,7 @@ pub struct LyricLine { pub t0: f64, pub t1: f64, pub words: Vec<(String, f64)> }
 
 pub struct Scene<'a> {
     pub lyrics: &'a [LyricLine],
+    pub bars: &'a [(f64, f32)],
     pub tl: &'a Timeline,
     pub chars: &'a [CharStyle],
     pub beats: &'a [f64],
@@ -223,7 +224,7 @@ impl Renderer {
     pub fn draw(&mut self, sc: &Scene, t: f64) {
         self.frame_no += 1;
         let tl = sc.tl;
-        let (n, sim) = (tl.n, &tl.sim);
+        let (n, sim) = (tl.sim.n, &tl.sim);
         let pal = tl.course.pal;
         let base = self.base();
         // background gradient
@@ -234,22 +235,26 @@ impl Renderer {
         // positions, interpolated between the 60 Hz physics steps
         let fa = (t * FPS).max(0.0);
         let f = (fa.floor() as usize).min(tl.frames);
-        let sf_f = (fa * tl.factor).clamp(0.0, sim.frames as f64 - 1.0);
+        let sf_f = tl.sim_frame(t.max(0.0));
         let (sf0, u) = (sf_f.floor() as usize, sf_f - sf_f.floor());
         let sf1 = (sf0 + 1).min(sim.frames - 1);
         let p: Vec<(f64, f64)> = (0..n).map(|i| { let (a, b) = (sim.at(sf0, i), sim.at(sf1, i)); (a.0 + (b.0 - a.0) * u, a.1 + (b.1 - a.1) * u) }).collect();
         let cam = sim.cam[sf0] as f64 * (1.0 - u) + sim.cam[sf1] as f64 * u;
         let ts = sf_f / FPS;
         let score = |i: usize| if sim.fins[i] >= 0.0 && sim.fins[i] <= ts { 1e9 - sim.fins[i] } else { p[i].1 };
-        let mut order: Vec<usize> = (0..n).collect();
+        let np = tl.nplayers;
+        let mut order: Vec<usize> = (0..np).collect();
         order.sort_by(|&a, &b| score(b).partial_cmp(&score(a)).unwrap());
+        let inten = if sc.bars.is_empty() { 0.5 } else { let j = sc.bars.partition_point(|b| b.0 <= t); sc.bars[j.saturating_sub(1)].1 as f64 };
         let leader = tl.lead_a[f.min(tl.lead_a.len() - 1)] as usize;
         let pulse = match sc.beats.partition_point(|&b| b <= t) { 0 => 0.0, k => (-(t - sc.beats[k - 1]) * 9.0).exp() };
         let wz = (t - tl.win_time).max(0.0);
         let ez = 1.0 - (1.0 - (wz / 1.3).min(1.0)).powi(3);
-        let zoom = ((1.0 + pulse * 0.012) * (1.0 + 0.1 * ez)) as f32;
-        let shake = if sc.pro_post { ((t * 93.0).sin() * pulse * 3.0) as f32 } else { 0.0 };
-        let shake_y = if sc.pro_post { ((t * 77.0).cos() * pulse * 3.0) as f32 } else { 0.0 };
+        // the louder the music, the harder the picture hits on the beat
+        let zoom = ((1.0 + pulse * (0.010 + 0.03 * inten)) * (1.0 + 0.1 * ez)) as f32;
+        let amp = (0.6 + 4.5 * inten * inten) * if sc.pro_post { 1.0 } else { 0.7 };
+        let shake = ((t * 93.0).sin() * pulse * amp) as f32;
+        let shake_y = ((t * 77.0).cos() * pulse * amp) as f32;
 
         self.background(&tl.course, cam, t, pulse, base);
 
@@ -278,7 +283,7 @@ impl Renderer {
         for s in &tl.course.segs {
             if s.y1.max(s.y2) < top - 30.0 || s.y1.min(s.y2) > bot + 30.0 { continue; }
             let hue = ((pal.hb + ((s.y1 * 0.17) % pal.hs as f64) as f32) % 360.0) as f32;
-            self.seg_pro(s, hue, pulse as f32, world);
+            self.seg_pro(s, hue, pulse as f32, ts, world);
         }
         for sp in &tl.course.spins {
             if sp.cy < top - 120.0 || sp.cy > bot + 120.0 { continue; }
@@ -298,6 +303,15 @@ impl Renderer {
                 let a = 0.34 * (1.0 - k as f32 / 9.0);
                 fill(&mut self.pm, &circle(q.0 as f32, q.1 as f32, RAD as f32 * (1.0 - 0.06 * k as f32)), &paint_c(colu(sc.chars[i].color, a)), world);
             }
+        }
+        // the crowd: extra marbles that join the pack in the loud parts (behind the named ones, a little see-through)
+        for i in np..n {
+            let (x, y) = (p[i].0 as f32, p[i].1 as f32);
+            if (y as f64) < top - 30.0 || (y as f64) > bot + 30.0 { continue; }
+            let hue = (i as f32 * 67.0 + 20.0) % 360.0;
+            let c = hsl(hue, 70.0, 66.0);
+            let cc = [c[0] as u8, c[1] as u8, c[2] as u8];
+            self.draw_sprite(0, cc, 0, x, y, 2.0 * RAD as f32 * (128.0 / 116.0) * 0.9, 0.6, BlendMode::SourceOver, world);
         }
         // marbles (the leader on top)
         for &i in order.iter().rev() {
@@ -447,7 +461,35 @@ impl Renderer {
         self.pm.stroke_path(&path, &paint_c(Color::from_rgba8(120, 70, 0, 204)), &Stroke { width: 1.5, ..Stroke::default() }, t, None);
     }
 
-    fn seg_pro(&mut self, s: &Seg, hue: f32, pulse: f32, t: Transform) {
+    /// A pad composed from the music: an approach ring closes on the marble, flashes on the beat, then fades.
+    fn pad(&mut self, s: &Seg, hue: f32, ts: f64, t: Transform) {
+        if ts < s.vis0 || ts > s.t1 { return; }
+        let (x, y, r) = (s.x1 as f32, s.y1 as f32, s.r as f32);
+        let h2 = (hue + 120.0) % 360.0;
+        let approach = ((ts - s.vis0) / (s.t0 - s.vis0)).clamp(0.0, 1.0) as f32;
+        let since = (ts - s.t0) as f32;
+        let life = if since < 0.0 { 1.0 } else { (1.0 - since / (s.t1 - s.t0) as f32).clamp(0.0, 1.0) };
+        let dim = if s.e < 0.6 { 0.38 } else { 1.0 }; // the crowd's pads sit in the background
+        let a = (if since < 0.0 { 0.35 + 0.65 * approach } else { 0.25 + 0.75 * life }) * dim;
+        if since < 0.0 {
+            // the ring shrinks onto the pad exactly as the marble arrives
+            let ring = r + (1.0 - approach) * r * 2.2;
+            self.pm.stroke_path(&circle(x, y, ring), &paint_c(col(hsl(h2, 90.0, 72.0), (0.2 + 0.7 * approach) * dim)), &Stroke { width: 2.0, ..Stroke::default() }, t, None);
+        } else if since < 0.35 {
+            let k = since / 0.35;
+            self.pm.stroke_path(&circle(x, y, r + k * r * 3.0), &paint_c(col(hsl(h2, 90.0, 80.0), (1.0 - k) * 0.9 * dim)), &Stroke { width: 3.5 * (1.0 - k) + 1.0, ..Stroke::default() }, t, None);
+        }
+        let flash = if since >= 0.0 && since < 0.12 { 1.0 - since / 0.12 } else { 0.0 };
+        let glow = Paint { shader: radial(x, y, r * 2.4, vec![(0.0, col(hsl(h2, 90.0, 58.0), 0.55 * a + 0.4 * flash)), (1.0, col(hsl(h2, 90.0, 58.0), 0.0))]), blend_mode: BlendMode::Plus, ..Paint::default() };
+        fill(&mut self.pm, &circle(x, y, r * 2.4), &glow, t);
+        let body = Paint { shader: RadialGradient::new(Point::from_xy(x - r * 0.3, y - r * 0.35), Point::from_xy(x, y), r,
+            vec![GradientStop::new(0.0, col(hsl(h2, 90.0, 80.0 + flash * 12.0), a)), GradientStop::new(0.6, col(hsl(h2, 85.0, 50.0 + flash * 16.0), a)), GradientStop::new(1.0, col(hsl(h2, 85.0, 30.0), a))],
+            SpreadMode::Pad, Transform::identity()).unwrap(), anti_alias: true, ..Paint::default() };
+        fill(&mut self.pm, &circle(x, y, r * (1.0 + 0.18 * flash)), &body, t);
+    }
+
+    fn seg_pro(&mut self, s: &Seg, hue: f32, pulse: f32, ts: f64, t: Transform) {
+        if s.t0 > -1e8 { self.pad(s, hue, ts, t); return; }
         let c = hsl(hue, 85.0, 62.0);
         match s.kind {
             Kind::Peg => {
@@ -517,7 +559,7 @@ impl Renderer {
 
     fn hud(&mut self, sc: &Scene, p: &[(f64, f64)], order: &[usize], leader: usize, t: f64, pulse: f64) {
         let base = self.base();
-        let (tl, n) = (sc.tl, sc.tl.n);
+        let (tl, n) = (sc.tl, sc.tl.nplayers);
         let ch = &sc.chars[leader];
         let c = ch.color;
         // top banner

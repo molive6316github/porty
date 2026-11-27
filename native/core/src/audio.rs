@@ -150,6 +150,17 @@ pub fn bars(song: &Song) -> (Vec<f64>, Vec<f32>) {
     (downs, energy)
 }
 
+/// How intense each bar is, 0..1 (rank of its loudness among all bars, lightly smoothed): (bar start, intensity)
+pub fn intensity_bars(song: &Song) -> Vec<(f64, f32)> {
+    let (downs, e) = bars(song);
+    if downs.len() < 3 { return vec![]; }
+    let mut sorted = e.clone();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let rank = |v: f32| sorted.partition_point(|x| *x < v) as f32 / (sorted.len() - 1).max(1) as f32;
+    let r: Vec<f32> = e.iter().map(|v| rank(*v)).collect();
+    (0..r.len()).map(|i| (downs[i], 0.25 * r[i.saturating_sub(1)] + 0.5 * r[i] + 0.25 * r[(i + 1).min(r.len() - 1)])).collect()
+}
+
 /// The song's big moments (drops, section changes), snapped to bar starts, at least `min_gap` seconds apart. Strongest energy jumps first.
 pub fn section_times(song: &Song, count: usize, min_gap: f64) -> Vec<f64> {
     let (downs, e) = bars(song);

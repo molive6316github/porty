@@ -86,6 +86,8 @@ struct App {
     cur_plan: Vec<(f64, usize)>,
     cur_winner: Option<usize>,
     cur_len: f64,
+    cur_bars: Vec<(f64, f32)>,
+    cur_compose: bool,
     story: Option<StoryRun>,
     story_name: String,
     race_title: String,
@@ -113,7 +115,7 @@ fn cfg_path() -> std::path::PathBuf {
 impl App {
     fn new() -> Self {
         let mut a = App { map: 0, seed: "42".into(), n: 6, len: 40.0, tl: None, beats: (0..2000).map(|i| i as f64 * 0.5).collect(), chars: vec![], r: Renderer::new(405, 720), tex: None, t: 0.0, playing: true, last: Instant::now(), song: None, status: "No song loaded".into(), _stream: OutputStream::try_default().ok(), sink: None, prog: Default::default(), total: Default::default(), cancel: Default::default(), exporting: Default::default(), result: Default::default(), hd: true, upd: Default::default(), upd_msg: Default::default(), upd_busy: Default::default(),
-            roster: (0..8).map(|i| (COLS[i], NAMES[i].to_string())).collect(), rig: false, plan: vec![], rig_winner: None, active: vec![], eff_seed: String::new(), tour: None, tab: 0, spk: vec![10, 25, 40, 60, 75, 90, 5, 100], clones: vec![None; 8], lyrics: String::new(), voiced: None, ai_status: Default::default(), ai_busy: Default::default(), ai_out: Default::default(), auto_update: true, update_url: String::new(), ffmpeg_path: String::new(), ff_found: Default::default(), ff_busy: Default::default(), upd_checking: Default::default(), upd_got: Default::default(), upd_total: Default::default(), toast: None, confirm_del: false, confirm_reset: false, ff_dl: Default::default(), ff_got: Default::default(), ff_total: Default::default(), ff_msg: Default::default(), singing: false, sync_music: true, av_offset_ms: 0, show_lyrics: true, song_path: String::new(), lyric_lines: vec![], lyr_draft: None, lyr_paste: String::new(), lyr_busy: Default::default(), lyr_status: Default::default(), lyr_out: Default::default(), cur_plan: vec![], cur_winner: None, cur_len: 40.0, story: None, story_name: String::new(), race_title: "Marbeat".into() };
+            roster: (0..8).map(|i| (COLS[i], NAMES[i].to_string())).collect(), rig: false, plan: vec![], rig_winner: None, active: vec![], eff_seed: String::new(), tour: None, tab: 0, spk: vec![10, 25, 40, 60, 75, 90, 5, 100], clones: vec![None; 8], lyrics: String::new(), voiced: None, ai_status: Default::default(), ai_busy: Default::default(), ai_out: Default::default(), auto_update: true, update_url: String::new(), ffmpeg_path: String::new(), ff_found: Default::default(), ff_busy: Default::default(), upd_checking: Default::default(), upd_got: Default::default(), upd_total: Default::default(), toast: None, confirm_del: false, confirm_reset: false, ff_dl: Default::default(), ff_got: Default::default(), ff_total: Default::default(), ff_msg: Default::default(), singing: false, sync_music: true, av_offset_ms: 0, show_lyrics: true, song_path: String::new(), lyric_lines: vec![], lyr_draft: None, lyr_paste: String::new(), lyr_busy: Default::default(), lyr_status: Default::default(), lyr_out: Default::default(), cur_plan: vec![], cur_winner: None, cur_len: 40.0, cur_bars: vec![], cur_compose: false, story: None, story_name: String::new(), race_title: "Marbeat".into() };
         a.load_cfg();
         update::set_url(Some(a.update_url.clone()));
         marbeat_core::export::set_ffmpeg_override(Some(a.ffmpeg_path.clone()));
@@ -162,6 +164,7 @@ impl App {
         let plan = self.cur_plan.clone();
         let rw = self.cur_winner;
         let lyr = if self.show_lyrics { self.lyric_lines.clone() } else { vec![] };
+        let (bars_s, compose) = (self.cur_bars.clone(), self.cur_compose);
         let song = self.song.as_ref().map(|s| Song { sr: s.sr, mono: vec![], stereo: self.voiced.clone().unwrap_or_else(|| s.stereo.clone()), beats: vec![], bpm: s.bpm });
         let chars: Vec<(String, [u8; 3])> = self.chars.iter().map(|c| (c.name.clone(), c.color)).collect();
         let title_s = self.race_title.clone();
@@ -170,9 +173,9 @@ impl App {
         busy.store(true, Ordering::SeqCst);
         prog.store(0, Ordering::SeqCst);
         std::thread::spawn(move || {
-            let tl = build_timeline(&RaceSetup { seed: &seed, map: key, n, len, beats: &beats, plan: &plan, winner: rw });
+            let tl = build_timeline(&RaceSetup { seed: &seed, map: key, n, len, beats: &beats, plan: &plan, winner: rw, bars: &bars_s, compose });
             let cs: Vec<CharStyle> = chars.iter().map(|(n, c)| CharStyle { name: n.clone(), color: *c, label: "Marble".into() }).collect();
-            let sc = Scene { lyrics: &lyr, tl: &tl, chars: &cs, beats: &beats, title: &title_s, pro_post: true };
+            let sc = Scene { lyrics: &lyr, bars: &bars_s, tl: &tl, chars: &cs, beats: &beats, title: &title_s, pro_post: true };
             let r = marbeat_core::export::export_mp4(&sc, song.as_ref(), &out, if hd { 2 } else { 1 }, |f, t| { prog.store(f, Ordering::Relaxed); total.store(t, Ordering::Relaxed); !cancel.load(Ordering::Relaxed) });
             *res.lock().unwrap() = Some(match r { Ok(()) => format!("Saved {out}"), Err(e) => format!("Export failed: {}", e.lines().next().unwrap_or("")) });
             busy.store(false, Ordering::SeqCst);
@@ -387,13 +390,8 @@ impl App {
         // never the same marble twice in a row
         for i in 1..plan.len() { if plan[i].1 == plan[i - 1].1 { plan[i].1 = (plan[i].1 + 1) % n; } }
         let winner = plan.last().map(|p| p.1);
-        // fit the length so the finish lands on `target`
-        let mut len = target * 1.05;
-        for _ in 0..3 {
-            let tl = build_timeline(&RaceSetup { seed: &self.eff_seed, map: key, n, len, beats: &self.beats, plan: &plan, winner });
-            if (tl.win_time - target).abs() < 0.25 { break; }
-            len = (len * target / tl.win_time.max(1.0)).clamp(10.0, 320.0);
-        }
+        // beat mode builds the race straight from the beats, so the length is simply the song up to its last beat
+        let len = target + 2.5;
         (plan, winner, len)
     }
     fn store_path() -> std::path::PathBuf { cfg_path().with_file_name("lyrics.json") }
@@ -454,8 +452,10 @@ impl App {
             (plan, if self.rig { self.rig_winner.filter(|w| *w < n) } else { None }, self.len as f64)
         };
         self.cur_plan = plan.clone(); self.cur_winner = winner; self.cur_len = len;
+        self.cur_compose = auto;
+        self.cur_bars = if auto { marbeat_core::audio::intensity_bars(self.song.as_ref().unwrap()) } else { vec![] };
         if auto { self.len = len as f32; }
-        self.tl = Some(build_timeline(&RaceSetup { seed: &self.eff_seed, map: key, n, len, beats: &self.beats, plan: &plan, winner }));
+        self.tl = Some(build_timeline(&RaceSetup { seed: &self.eff_seed, map: key, n, len, beats: &self.beats, plan: &plan, winner, bars: &self.cur_bars, compose: auto }));
         self.chars = self.active.iter().map(|&i| CharStyle { name: self.roster[i].1.clone(), color: self.roster[i].0, label: if self.tour.is_some() { format!("Round {}", self.tour.as_ref().unwrap().round + 1) } else { "Marble".into() } }).collect();
         self.t = 0.0;
         self.playing = true;
@@ -944,7 +944,7 @@ impl eframe::App for App {
                     let ws: Vec<&str> = l.text.split_whitespace().collect(); let tot: usize = ws.iter().map(|w| w.chars().count() + 1).sum(); let mut acc = 0usize;
                     LyricLine { t0: l.t0, t1, words: ws.iter().map(|w| { let t = l.t0 + (t1 - l.t0) * acc as f64 / tot.max(1) as f64; acc += w.chars().count() + 1; (w.to_string(), t) }).collect() }
                 }).collect(), None => vec![] };
-                let sc = Scene { lyrics: if self.lyr_draft.is_some() { &drafted } else if self.show_lyrics { &self.lyric_lines } else { &empty }, tl, chars: &self.chars, beats: &self.beats, title: &self.race_title, pro_post: false };
+                let sc = Scene { bars: &self.cur_bars, lyrics: if self.lyr_draft.is_some() { &drafted } else if self.show_lyrics { &self.lyric_lines } else { &empty }, tl, chars: &self.chars, beats: &self.beats, title: &self.race_title, pro_post: false };
                 self.r.draw(&sc, (self.t + self.av_offset_ms as f64 / 1000.0).max(0.0));
             }
             if let Some(run) = &self.story {

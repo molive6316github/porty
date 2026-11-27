@@ -1,6 +1,7 @@
 //! The same random generator and seed hash as the web version, so a seed means the same race.
 
 /// mulberry32, bit for bit like the JavaScript version.
+#[derive(Clone)]
 pub struct Rng(u32);
 
 impl Rng {

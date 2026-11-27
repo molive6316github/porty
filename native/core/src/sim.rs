@@ -21,6 +21,7 @@ struct Marble {
 
 #[derive(Clone, Copy, Debug)]
 pub struct Event {
+    pub m: u8,
     pub f: u32,
     pub kind: u8, // 0 peg, 1 bumper, 2 ramp, 3 marble-on-marble
     pub v: f32,
@@ -43,6 +44,7 @@ pub struct Sim {
     pub winner: usize,
     pub fins: Vec<f64>,
     pub events: Vec<Event>,
+    pub touch: Vec<u8>, // frames * n: 1 while that marble is touching the course
 }
 
 impl Sim {
@@ -52,7 +54,7 @@ impl Sim {
     }
 }
 
-fn hit_seg(m: &mut Marble, x1: f64, y1: f64, x2: f64, y2: f64, r: f64, e: f64) -> f64 {
+fn hit_seg(m: &mut Marble, x1: f64, y1: f64, x2: f64, y2: f64, r: f64, e: f64, kick: f64) -> f64 {
     let (dx, dy) = (x2 - x1, y2 - y1);
     let l2 = dx * dx + dy * dy;
     let mut u = if l2 > 0.0 { ((m.x - x1) * dx + (m.y - y1) * dy) / l2 } else { 0.0 };
@@ -79,138 +81,123 @@ fn hit_seg(m: &mut Marble, x1: f64, y1: f64, x2: f64, y2: f64, r: f64, e: f64) -
         m.vx -= (1.0 + e) * vn * nx;
         m.vy -= (1.0 + e) * vn * ny;
         m.vx *= 0.998;
+        if kick > 0.0 { let out = m.vx * nx + m.vy * ny; if out < kick { m.vx += (kick - out) * nx; m.vy += (kick - out) * ny; } }
         return -vn;
     }
     0.0
 }
 
-pub fn simulate(course: &Course, n: usize, beats: &[f64], nudge_seed: u32, seed: &str, max_t: f64, sched: Option<&[SchedKey]>) -> Sim {
-    let mut r0 = Rng::new(hash_seed(&format!("{seed}|start")));
-    let mut rn = Rng::new(nudge_seed);
-    let mut ms: Vec<Marble> = Vec::with_capacity(n);
-    for i in 0..n {
-        let (row, col, per) = (i % 2, i / 2, (n + 1) / 2);
-        let x = 70.0 + (W - 140.0) * ((col as f64 + if row == 1 { 0.5 } else { 0.0 } + r0.next() * 0.2) / (per as f64 - 0.5).max(1.0));
-        let vx = (r0.next() - 0.5) * 30.0;
-        ms.push(Marble { x, y: 50.0 + row as f64 * 36.0, vx, vy: 0.0, fin: -1.0, still: 0, last_ev: -9, last_mm: -9, contact: -99 });
+/// The physics as a steppable object, so a composer can look at the race at any moment and add things to the course as it goes.
+pub struct Engine {
+    pub n: usize,
+    ms: Vec<Marble>,
+    pub f: usize,
+    cam_y: f64,
+    rn: Rng,
+    di: i64,
+    winner: i64,
+    done: usize,
+    end_f: i64,
+    win_f: i64,
+    pub ended: bool,
+    pos: Vec<f32>,
+    lead: Vec<u8>,
+    cam: Vec<f32>,
+    touch: Vec<u8>,
+    events: Vec<Event>,
+}
+
+/// What the composer needs to know about a marble right now.
+#[derive(Clone, Copy, Debug)]
+pub struct Look { pub x: f64, pub y: f64, pub vx: f64, pub vy: f64, pub leader: usize }
+
+impl Engine {
+    pub fn new(n: usize, nudge_seed: u32, seed: &str) -> Engine {
+        let mut r0 = Rng::new(hash_seed(&format!("{seed}|start")));
+        let mut ms: Vec<Marble> = Vec::with_capacity(n);
+        for i in 0..n {
+            let (row, col, per) = (i % 2, i / 2, (n + 1) / 2);
+            let x = 70.0 + (W - 140.0) * ((col as f64 + if row == 1 { 0.5 } else { 0.0 } + r0.next() * 0.2) / (per as f64 - 0.5).max(1.0));
+            let vx = (r0.next() - 0.5) * 30.0;
+            ms.push(Marble { x, y: 50.0 + row as f64 * 36.0, vx, vy: 0.0, fin: -1.0, still: 0, last_ev: -9, last_mm: -9, contact: -99 });
+        }
+        Engine { n, ms, f: 0, cam_y: 300.0, rn: Rng::new(nudge_seed), di: -1, winner: -1, done: 0, end_f: -1, win_f: -1, ended: false, pos: vec![], lead: vec![], cam: vec![], touch: vec![], events: vec![] }
     }
-    let max_f = (max_t * FPS).ceil() as usize + 1;
-    let mut pos = vec![0f32; max_f * n * 2];
-    let mut lead = vec![0u8; max_f];
-    let mut cam = vec![0f32; max_f];
-    let (mut f, mut bi) = (0usize, 0usize);
-    let mut cam_y = 300.0f64;
-    let (mut winner, mut done, mut end_f, mut win_f): (i64, usize, i64, i64) = (-1, 0, -1, -1);
-    let mut di: i64 = -1;
-    let mut events: Vec<Event> = Vec::new();
-    let finish_y = course.finish_y;
-    while f < max_f {
+    pub fn time(&self) -> f64 { self.f as f64 / FPS }
+    /// the leading marble and where it is going
+    pub fn look(&self) -> Look {
+        let mut l = 0usize;
+        let mut best = f64::NEG_INFINITY;
+        for (i, m) in self.ms.iter().enumerate() { let sc = if m.fin >= 0.0 { 1e9 - m.fin } else { m.y }; if sc > best { best = sc; l = i; } }
+        let m = self.ms[l];
+        Look { x: m.x, y: m.y, vx: m.vx, vy: m.vy, leader: l }
+    }
+    /// Advance one 60 Hz frame. Returns false once the race is over.
+    pub fn step(&mut self, course: &Course, sched: Option<&[SchedKey]>) -> bool {
+        if self.ended { return false; }
+        let n = self.n;
+        let f = self.f;
         let t = f as f64 / FPS;
         for i in 0..n {
-            pos[(f * n + i) * 2] = ms[i].x as f32;
-            pos[(f * n + i) * 2 + 1] = ms[i].y as f32;
+            self.pos.push(self.ms[i].x as f32);
+            self.pos.push(self.ms[i].y as f32);
+            self.touch.push((f as i64 - self.ms[i].contact <= 2) as u8);
         }
-        let (mut l, mut best) = (0usize, f64::NEG_INFINITY);
-        for i in 0..n {
-            let sc = if ms[i].fin >= 0.0 { 1e9 - ms[i].fin } else { ms[i].y };
-            if sc > best {
-                best = sc;
-                l = i;
-            }
-        }
-        lead[f] = l as u8;
-        let ly = ms.iter().map(|m| m.y).fold(f64::NEG_INFINITY, f64::max);
-        cam_y += (ly.min(finish_y - 80.0) - cam_y) * 0.1;
-        cam[f] = cam_y as f32;
-        if win_f >= 0 && end_f < 0 && f as i64 >= win_f + (3.0 * FPS).floor() as i64 {
-            end_f = f as i64;
-        }
-        if done == n && end_f < 0 {
-            end_f = f as i64 + FPS as i64;
-        }
-        if end_f >= 0 && f as i64 >= end_f {
-            f += 1;
-            break;
-        }
-        while bi < beats.len() && beats[bi] <= t {
-            // the track thumps on the beat: marbles that are touching it get popped up. Marbles in mid-air are never touched.
-            for k in 0..n {
-                if ms[k].fin < 0.0 && f as i64 - ms[k].contact <= 3 {
-                    ms[k].vy -= 105.0 + 45.0 * rn.next();
-                    ms[k].vx += (rn.next() - 0.5) * 40.0;
-                }
-            }
-            bi += 1;
-        }
+        let lk = self.look();
+        self.lead.push(lk.leader as u8);
+        let finish_y = course.finish_y;
+        let ly = self.ms.iter().map(|m| m.y).fold(f64::NEG_INFINITY, f64::max);
+        self.cam_y += (ly.min(finish_y - 80.0) - self.cam_y) * 0.1;
+        self.cam.push(self.cam_y as f32);
+        if self.win_f >= 0 && self.end_f < 0 && f as i64 >= self.win_f + (3.0 * FPS).floor() as i64 { self.end_f = f as i64; }
+        if self.done == n && self.end_f < 0 { self.end_f = f as i64 + FPS as i64; }
+        if self.end_f >= 0 && f as i64 >= self.end_f { self.ended = true; self.f += 1; return false; }
         for s in 0..2 {
             let st = t + s as f64 * DT;
             if let Some(sc) = sched {
-                // the director: push the marble that should lead forward, hold the current leader back
-                while ((di + 1) as usize) < sc.len() && sc[(di + 1) as usize].ts <= st {
-                    di += 1;
-                }
-                if di >= 0 {
-                    let d = sc[di as usize].m;
+                // the director: nudge the marble that should lead forward, slow the current leader. It only ever adds a little
+                // downhill pull or drag, never an upward force, so nothing floats.
+                while ((self.di + 1) as usize) < sc.len() && sc[(self.di + 1) as usize].ts <= st { self.di += 1; }
+                if self.di >= 0 {
+                    let d = sc[self.di as usize].m;
                     let (mut lm, mut ly2) = (-1i64, f64::NEG_INFINITY);
-                    for q in 0..n {
-                        if ms[q].fin < 0.0 && ms[q].y > ly2 {
-                            ly2 = ms[q].y;
-                            lm = q as i64;
-                        }
-                    }
-                    if lm >= 0 && ms[d].fin < 0.0 {
+                    for q in 0..n { if self.ms[q].fin < 0.0 && self.ms[q].y > ly2 { ly2 = self.ms[q].y; lm = q as i64; } }
+                    if lm >= 0 && self.ms[d].fin < 0.0 {
                         if lm as usize != d {
-                            // never fight gravity: the marble that should lead gets a little extra downhill pull (at most 0.4 g),
-                            // the one in front gets rolling drag. Nothing is ever pushed upward, so nothing floats.
-                            let gap = ly2 - ms[d].y;
+                            let gap = ly2 - self.ms[d].y;
                             let k = (gap / 90.0).clamp(0.0, 1.0);
-                            ms[d].vy += GRAV * DT * (0.12 + 0.28 * k);
+                            self.ms[d].vy += GRAV * DT * (0.12 + 0.28 * k);
                             let lmi = lm as usize;
                             let drag = 0.004 + 0.012 * k;
-                            ms[lmi].vy *= 1.0 - drag;
-                            ms[lmi].vx *= 1.0 - drag * 0.5;
+                            self.ms[lmi].vy *= 1.0 - drag;
+                            self.ms[lmi].vx *= 1.0 - drag * 0.5;
                         } else {
-                            ms[d].vy += GRAV * DT * 0.12;
-                            let dy = ms[d].y;
-                            for q in 0..n {
-                                if q != d && ms[q].fin < 0.0 && dy - ms[q].y > 220.0 {
-                                    ms[q].vy += GRAV * DT * 0.25;
-                                }
-                            }
+                            self.ms[d].vy += GRAV * DT * 0.12;
+                            let dy = self.ms[d].y;
+                            for q in 0..n { if q != d && self.ms[q].fin < 0.0 && dy - self.ms[q].y > 220.0 { self.ms[q].vy += GRAV * DT * 0.25; } }
                         }
                     }
                 }
             }
             for mi in 0..n {
-                let mut m = ms[mi];
+                let mut m = self.ms[mi];
                 m.vy += GRAV * DT;
                 let sp = m.vx.hypot(m.vy);
-                if sp > 1300.0 {
-                    m.vx *= 1300.0 / sp;
-                    m.vy *= 1300.0 / sp;
-                }
+                if sp > 1300.0 { m.vx *= 1300.0 / sp; m.vy *= 1300.0 / sp; }
                 m.x += m.vx * DT;
                 m.y += m.vy * DT;
-                if m.x < RAD {
-                    m.x = RAD;
-                    m.vx = m.vx.abs() * 0.5;
-                } else if m.x > W - RAD {
-                    m.x = W - RAD;
-                    m.vx = -m.vx.abs() * 0.5;
-                }
+                if m.x < RAD { m.x = RAD; m.vx = m.vx.abs() * 0.5; } else if m.x > W - RAD { m.x = W - RAD; m.vx = -m.vx.abs() * 0.5; }
                 let bidx = ((m.y / BAND).floor() as i64).clamp(0, course.bands.len() as i64 - 1) as usize;
                 let (cx0, cy0) = (m.x, m.y);
                 for &si in &course.bands[bidx] {
                     let sg = &course.segs[si as usize];
-                    let imp = hit_seg(&mut m, sg.x1, sg.y1, sg.x2, sg.y2, sg.r, sg.e);
-                    if imp > 140.0 && f as i64 - m.last_ev > 2 {
+                    if st < sg.t0 || st > sg.t1 { continue; } // timed bumpers only exist for a moment
+                    let timed = sg.t0 > -1e8;
+                    let imp = hit_seg(&mut m, sg.x1, sg.y1, sg.x2, sg.y2, sg.r, sg.e, if timed { 320.0 } else { 0.0 });
+                    if imp > if timed { 25.0 } else { 140.0 } && f as i64 - m.last_ev > 2 {
                         m.last_ev = f as i64;
-                        let kind = match sg.kind {
-                            Kind::Peg => 0,
-                            Kind::Bump => 1,
-                            Kind::Ramp => 2,
-                        };
-                        events.push(Event { f: f as u32, kind, v: imp as f32, x: m.x as f32 });
+                        let kind = match sg.kind { Kind::Peg => 0, Kind::Bump => 1, Kind::Ramp => 2 };
+                        self.events.push(Event { m: mi as u8, f: f as u32, kind, v: imp as f32, x: m.x as f32 });
                     }
                 }
                 if m.x != cx0 || m.y != cy0 { m.contact = f as i64; }
@@ -219,7 +206,7 @@ pub fn simulate(course: &Course, n: usize, beats: &[f64], nudge_seed: u32, seed:
                         let a = sp2.ph + sp2.w * st;
                         let (c, sn) = (a.cos() * sp2.len, a.sin() * sp2.len);
                         let (px, py) = (m.x, m.y);
-                        hit_seg(&mut m, sp2.cx - c, sp2.cy - sn, sp2.cx + c, sp2.cy + sn, sp2.r, 0.5);
+                        hit_seg(&mut m, sp2.cx - c, sp2.cy - sn, sp2.cx + c, sp2.cy + sn, sp2.r, 0.5, 0.0);
                         if m.x != px || m.y != py {
                             let (rx, ry) = (m.x - sp2.cx, m.y - sp2.cy);
                             m.vx += -ry * sp2.w * 0.35 * DT * 60.0 * 0.1;
@@ -229,75 +216,165 @@ pub fn simulate(course: &Course, n: usize, beats: &[f64], nudge_seed: u32, seed:
                 }
                 if m.vx.hypot(m.vy) < 12.0 && m.y < finish_y {
                     m.still += 1;
-                    if m.still > 150 {
-                        m.vx += (if m.x < W / 2.0 { 1.0 } else { -1.0 }) * (220.0 + rn.next() * 160.0);
-                        m.vy -= 160.0;
-                        m.still = 0;
-                    }
-                } else {
-                    m.still = 0;
-                }
+                    if m.still > 150 { m.vx += (if m.x < W / 2.0 { 1.0 } else { -1.0 }) * (220.0 + self.rn.next() * 160.0); m.vy -= 160.0; m.still = 0; }
+                } else { m.still = 0; }
                 if m.fin < 0.0 && m.y > finish_y {
                     m.fin = st;
-                    done += 1;
-                    if winner < 0 {
-                        winner = mi as i64;
-                        win_f = f as i64;
-                    }
+                    self.done += 1;
+                    if self.winner < 0 { self.winner = mi as i64; self.win_f = f as i64; }
                 }
-                ms[mi] = m;
+                self.ms[mi] = m;
             }
             for i in 0..n {
                 for j in (i + 1)..n {
-                    let (a, b) = (ms[i], ms[j]);
+                    let (a, b) = (self.ms[i], self.ms[j]);
                     let (mut dx, mut dy) = (b.x - a.x, b.y - a.y);
                     let d2 = dx * dx + dy * dy;
                     let rr = RAD * 2.0;
                     if d2 < rr * rr && d2 > 1e-9 {
                         let d = d2.sqrt();
-                        dx /= d;
-                        dy /= d;
+                        dx /= d; dy /= d;
                         let ov = (rr - d) / 2.0;
                         let (mut a, mut b) = (a, b);
-                        a.x -= dx * ov;
-                        a.y -= dy * ov;
-                        b.x += dx * ov;
-                        b.y += dy * ov;
+                        a.x -= dx * ov; a.y -= dy * ov; b.x += dx * ov; b.y += dy * ov;
                         let vn = (b.vx - a.vx) * dx + (b.vy - a.vy) * dy;
                         if vn < 0.0 {
                             let j2 = -(1.0 + 0.6) * vn / 2.0;
-                            a.vx -= j2 * dx;
-                            a.vy -= j2 * dy;
-                            b.vx += j2 * dx;
-                            b.vy += j2 * dy;
+                            a.vx -= j2 * dx; a.vy -= j2 * dy; b.vx += j2 * dx; b.vy += j2 * dy;
                             if -vn > 160.0 && f as i64 - a.last_mm > 3 {
                                 a.last_mm = f as i64;
-                                events.push(Event { f: f as u32, kind: 3, v: (-vn) as f32, x: ((a.x + b.x) / 2.0) as f32 });
+                                self.events.push(Event { m: i as u8, f: f as u32, kind: 3, v: (-vn) as f32, x: ((a.x + b.x) / 2.0) as f32 });
                             }
                         }
-                        ms[i] = a;
-                        ms[j] = b;
+                        self.ms[i] = a; self.ms[j] = b;
                     }
                 }
             }
         }
-        f += 1;
+        self.f += 1;
+        true
     }
-    if winner < 0 {
-        let mut b = 0;
-        for i in 1..n {
-            if ms[i].y > ms[b].y {
-                b = i;
+    pub fn finish(self, max_t: f64) -> Sim {
+        let n = self.n;
+        let mut winner = self.winner;
+        if winner < 0 { let mut b = 0; for i in 1..n { if self.ms[i].y > self.ms[b].y { b = i; } } winner = b as i64; }
+        let w = winner as usize;
+        let twin = if self.ms[w].fin >= 0.0 { self.ms[w].fin } else { max_t };
+        let frames = self.lead.len();
+        Sim { n, frames, pos: self.pos, lead: self.lead, cam: self.cam, twin, winner: w, fins: self.ms.iter().map(|m| m.fin).collect(), events: self.events, touch: self.touch }
+    }
+}
+
+pub fn simulate(course: &Course, n: usize, _beats: &[f64], nudge_seed: u32, seed: &str, max_t: f64, sched: Option<&[SchedKey]>) -> Sim {
+    let mut e = Engine::new(n, nudge_seed, seed);
+    let max_f = (max_t * FPS).ceil() as usize + 1;
+    while e.f < max_f && e.step(course, sched) {}
+    e.finish(max_t)
+}
+
+/// Maps song time to simulation time. A straight line at first; snapping bends it a little so impacts land on the beat.
+#[derive(Clone, Debug)]
+pub struct Warp { pub pts: Vec<(f64, f64)> } // (song seconds, sim seconds), both strictly increasing
+
+impl Warp {
+    pub fn linear(factor: f64) -> Warp { Warp { pts: vec![(0.0, 0.0), (10_000.0, 10_000.0 * factor)] } }
+    fn interp(pts: &[(f64, f64)], x: f64, rev: bool) -> f64 {
+        let (a, b): (Vec<f64>, Vec<f64>) = if rev { (pts.iter().map(|p| p.1).collect(), pts.iter().map(|p| p.0).collect()) } else { (pts.iter().map(|p| p.0).collect(), pts.iter().map(|p| p.1).collect()) };
+        let n = a.len();
+        let j = a.partition_point(|v| *v <= x).clamp(1, n - 1);
+        let (x0, x1, y0, y1) = (a[j - 1], a[j], b[j - 1], b[j]);
+        y0 + (y1 - y0) * (x - x0) / (x1 - x0).max(1e-9)
+    }
+    pub fn to_sim(&self, song_t: f64) -> f64 { Self::interp(&self.pts, song_t, false) }
+    pub fn to_song(&self, sim_t: f64) -> f64 { Self::interp(&self.pts, sim_t, true) }
+}
+
+/// Bend time so the strongest impacts (pegs, bumpers, ramps, marble hits) land exactly on a beat or half-beat.
+/// For every half-beat cell the strongest impact is a candidate; a small dynamic program chooses which grid point each one
+/// snaps to so playback never speeds up or slows down by more than about 25 %.
+pub fn snap_warp(sim: &Sim, beats: &[f64], factor: f64) -> Warp {
+    if beats.len() < 6 { return Warp::linear(factor); }
+    let mut grid: Vec<f64> = vec![];
+    for w in beats.windows(2) { grid.push(w[0]); grid.push((w[0] + w[1]) * 0.5); }
+    grid.push(*beats.last().unwrap());
+    // strongest impact per grid cell, in natural (unwarped) song time
+    let mut cell: std::collections::BTreeMap<usize, Vec<(f32, f64, f64)>> = Default::default(); // v, sim s, song e
+    for ev in &sim.events {
+        if ev.v < 240.0 { continue; }
+        let s = ev.f as f64 / FPS;
+        let e = s / factor;
+        if e < 0.8 || e < grid[0] || e > *grid.last().unwrap() { continue; }
+        let gi = grid.partition_point(|g| *g <= e).saturating_sub(1);
+        let v = ev.v * if ev.kind == 3 { 0.8 } else { 1.0 };
+        let ent = cell.entry(gi).or_default();
+        ent.push((v, s, e));
+        ent.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+        ent.truncate(2);
+    }
+    let mut evs: Vec<(f64, f64)> = cell.values().flat_map(|c| c.iter().map(|x| (x.2, x.1))).collect(); // (e, s)
+    evs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    if evs.len() < 2 { return Warp::linear(factor); }
+    // candidate grid points: the nearest few within a fifth of a second of the natural time
+    let cands: Vec<Vec<f64>> = evs.iter().map(|(e, _)| {
+        let j = grid.partition_point(|g| *g <= *e);
+        let mut c: Vec<f64> = grid[j.saturating_sub(2)..(j + 2).min(grid.len())].iter().cloned().filter(|g| (g - e).abs() <= 0.2).collect();
+        if c.is_empty() { c.push(grid[j.saturating_sub(1).min(grid.len() - 1)]); }
+        c
+    }).collect();
+    let (lo_r, hi_r) = (0.8, 1.25);
+    let ok = |c0: f64, s0: f64, c1: f64, s1: f64| -> bool { let dc = c1 - c0; dc > 0.05 && { let r = ((s1 - s0) / dc) / factor; r >= lo_r && r <= hi_r } };
+    let skip_cost = 0.0025;
+    let m = evs.len();
+    let maxskip = 4usize;
+    // dp over chosen impacts: node (i, k) = impact i snapped to its k-th candidate; edges may skip a few impacts at a cost
+    let inf = f64::MAX / 4.0;
+    let mut dp: Vec<Vec<(f64, i64, usize)>> = vec![]; // cost, prev impact (-1 = start), prev candidate
+    for i in 0..m {
+        let mut row = vec![];
+        for c in &cands[i] {
+            let own = (c - evs[i].0).powi(2);
+            let mut best = (inf, -2i64, 0usize);
+            if i <= maxskip && ok(0.0, 0.0, *c, evs[i].1) { best = (skip_cost * i as f64 + own, -1, 0); }
+            for j in i.saturating_sub(maxskip + 1)..i {
+                for (kj, cj) in cands[j].iter().enumerate() {
+                    if dp[j][kj].0 >= inf { continue; }
+                    if ok(*cj, evs[j].1, *c, evs[i].1) {
+                        let v = dp[j][kj].0 + skip_cost * (i - j - 1) as f64 + own;
+                        if v < best.0 { best = (v, j as i64, kj); }
+                    }
+                }
             }
+            row.push(best);
         }
-        winner = b as i64;
+        dp.push(row);
     }
-    let w = winner as usize;
-    let twin = if ms[w].fin >= 0.0 { ms[w].fin } else { max_t };
-    pos.truncate(f * n * 2);
-    lead.truncate(f);
-    cam.truncate(f);
-    Sim { n, frames: f, pos, lead, cam, twin, winner: w, fins: ms.iter().map(|m| m.fin).collect(), events }
+    let end = (sim.twin / factor, sim.twin);
+    // finish on the natural mapping if the speed limit allows it, otherwise just take the best chain
+    let mut fin: Option<(f64, usize, usize)> = None;
+    for i in m.saturating_sub(maxskip + 1)..m {
+        for (k, c) in cands[i].iter().enumerate() {
+            if dp[i][k].0 >= inf { continue; }
+            let reach = ok(*c, evs[i].1, end.0, end.1);
+            let v = dp[i][k].0 + skip_cost * (m - 1 - i) as f64 + if reach { 0.0 } else { 5.0 };
+            if fin.map(|f| v < f.0).unwrap_or(true) { fin = Some((v, i, k)); }
+        }
+    }
+    let Some((_, mut i, mut k)) = fin else { return Warp::linear(factor) };
+    let mut chosen: Vec<(f64, f64)> = vec![]; // (song c, sim s)
+    loop {
+        chosen.push((cands[i][k], evs[i].1));
+        let (_, pj, pk) = dp[i][k];
+        if pj < 0 { break; }
+        i = pj as usize; k = pk;
+    }
+    chosen.reverse();
+    let mut pts: Vec<(f64, f64)> = vec![(0.0, 0.0)];
+    for (c, s) in chosen { let l = *pts.last().unwrap(); if c > l.0 + 0.02 && s > l.1 + 0.02 { pts.push((c, s)); } }
+    let l = *pts.last().unwrap();
+    if end.0 > l.0 + 0.05 && end.1 > l.1 + 0.05 { pts.push(end); }
+    let l = *pts.last().unwrap();
+    pts.push((l.0 + 10_000.0, l.1 + 10_000.0 * factor));
+    Warp { pts }
 }
 
 /// A race laid out against the clock: the course is sized so the winner finishes about 2 s before the clip ends.
@@ -311,11 +388,15 @@ pub struct Timeline {
     pub n: usize,
     pub len: f64,
     pub landed: Option<(usize, usize)>,
+    pub warp: Warp,
+    /// the named marbles (the rest, in beat mode, are the crowd)
+    pub nplayers: usize,
 }
 
 impl Timeline {
-    pub fn sim_frame(&self, f: f64) -> f64 {
-        (f * self.factor).min(self.sim.frames as f64 - 1.0).max(0.0)
+    /// simulation frame (fractional) shown at song time `t` seconds
+    pub fn sim_frame(&self, t: f64) -> f64 {
+        (self.warp.to_sim(t) * FPS).min(self.sim.frames as f64 - 1.0).max(0.0)
     }
 }
 
@@ -328,9 +409,22 @@ pub struct RaceSetup<'a> {
     /// who should lead from when (seconds into the clip): the director's plan
     pub plan: &'a [(f64, usize)],
     pub winner: Option<usize>,
+    /// (bar start, intensity 0..1) from the music, and whether to compose the course from the beats
+    pub bars: &'a [(f64, f32)],
+    pub compose: bool,
 }
 
 pub fn build_timeline(s: &RaceSetup) -> Timeline {
+    if s.compose && s.beats.len() > 8 {
+        let cfg = crate::beatmode::BeatCfg { beats: s.beats, bars: s.bars, n: s.n, seed: s.seed, map: s.map, len: s.len, plan: s.plan, winner: s.winner };
+        if let Some((course, sim, total)) = crate::beatmode::build(&cfg) {
+            let frames = (s.len * FPS).ceil() as usize;
+            let lead_a: Vec<u8> = (0..=frames).map(|f| sim.lead[f.min(sim.frames - 1)]).collect();
+            let win_time = sim.twin;
+            let _ = total;
+            return Timeline { course, sim, factor: 1.0, frames, lead_a, win_time, n: s.n, len: s.len, landed: None, warp: Warp::linear(1.0), nplayers: s.n };
+        }
+    }
     let base = hash_seed(&format!("{}|n", s.seed));
     let (len, n) = (s.len, s.n);
     let mut hc = len * 210.0;
@@ -382,10 +476,11 @@ pub fn build_timeline(s: &RaceSetup) -> Timeline {
         sim = s2;
     }
     let factor = sim.twin / (len - 2.0).max(1.0);
+    let warp = snap_warp(&sim, s.beats, factor);
     let frames = (len * FPS).ceil() as usize;
-    let lead_a: Vec<u8> = (0..=frames).map(|f| sim.lead[((f as f64 * factor).floor() as usize).min(sim.frames - 1)]).collect();
-    let win_time = sim.twin / factor;
-    Timeline { course, sim, factor, frames, lead_a, win_time, n, len, landed }
+    let lead_a: Vec<u8> = (0..=frames).map(|f| sim.lead[((warp.to_sim(f as f64 / FPS) * FPS).floor() as usize).min(sim.frames - 1)]).collect();
+    let win_time = warp.to_song(sim.twin);
+    Timeline { course, sim, factor, frames, lead_a, win_time, n, len, landed, warp, nplayers: n }
 }
 
 /// Marble indexes, first place to last, from what really happened in the physics.
@@ -405,4 +500,74 @@ pub fn finish_order(sim: &Sim) -> Vec<usize> {
         }
     });
     idx
+}
+
+/// Fraction of beats that have a strong impact within 25 ms of them: (before warping, after warping)
+pub fn beat_coverage(tl: &Timeline, beats: &[f64]) -> (f64, f64) {
+    let ev: Vec<(f64, f64)> = tl.sim.events.iter().filter(|e| e.v >= 140.0).map(|e| { let s = e.f as f64 / FPS; (s / tl.factor, tl.warp.to_song(s)) }).collect();
+    let bs: Vec<f64> = beats.iter().cloned().filter(|b| *b > 1.0 && *b < tl.win_time).collect();
+    let cov = |sel: &dyn Fn(&(f64, f64)) -> f64| bs.iter().filter(|b| ev.iter().any(|e| (sel(e) - **b).abs() < 0.025)).count() as f64 / bs.len().max(1) as f64;
+    (cov(&|e| e.0), cov(&|e| e.1))
+}
+
+/// How well the strong impacts sit on the beat grid: (impacts counted, within 25 ms before warping, within 25 ms after, slowest speed, fastest speed)
+pub fn alignment_stats(tl: &Timeline, beats: &[f64]) -> (usize, usize, usize, f64, f64) {
+    let mut grid: Vec<f64> = vec![];
+    for w in beats.windows(2) { grid.push(w[0]); grid.push((w[0] + w[1]) * 0.5); }
+    let near = |t: f64| grid.iter().map(|g| (g - t).abs()).fold(f64::MAX, f64::min);
+    let (mut n, mut b, mut a) = (0, 0, 0);
+    for ev in &tl.sim.events {
+        if ev.v < 240.0 { continue; }
+        let s = ev.f as f64 / FPS;
+        let nat = s / tl.factor;
+        if nat < 1.0 || nat > tl.win_time { continue; }
+        n += 1;
+        if near(nat) < 0.025 { b += 1; }
+        if near(tl.warp.to_song(s)) < 0.025 { a += 1; }
+    }
+    let (mut lo, mut hi) = (f64::MAX, 0.0f64);
+    for w in tl.warp.pts.windows(2) { if w[1].0 < tl.win_time + 1.0 && w[0].0 >= 0.0 { let sl = (w[1].1 - w[0].1) / (w[1].0 - w[0].0) / tl.factor; lo = lo.min(sl); hi = hi.max(sl); } }
+    (n, b, a, lo, hi)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn beat_mode_is_locked_to_the_music() {
+        let beats: Vec<f64> = (0..70).map(|i| 0.4 + i as f64 * 60.0 / 128.0).collect();
+        let bars: Vec<(f64, f32)> = (0..18).map(|i| (0.4 + i as f64 * 4.0 * 60.0 / 128.0, [0.1f32, 0.2, 0.4, 0.6, 0.9, 1.0, 1.0, 0.9, 0.5, 0.3, 0.2, 0.2, 0.7, 0.9, 1.0, 0.8, 0.4, 0.2][i])).collect();
+        let plan = [(8.0, 2usize), (16.0, 4usize)];
+        for map in ["neon", "pachinko", "slide", "spinner", "funnel", "chaos"] {
+            let t0 = std::time::Instant::now();
+            let tl = build_timeline(&RaceSetup { seed: "beat-test", map, n: 6, len: 30.0, beats: &beats, plan: &plan, winner: Some(3), bars: &bars, compose: true });
+            let built = t0.elapsed();
+            let named: Vec<&Event> = tl.sim.events.iter().filter(|e| (e.m as usize) < 6).collect();
+            let hit = |b: f64| named.iter().any(|e| ((e.f as f64 / FPS) - b).abs() <= 1.0 / FPS + 1e-9);
+            let bs: Vec<f64> = beats.iter().cloned().filter(|b| *b > 2.5 && *b < tl.win_time - 1.0).collect();
+            let covered = bs.iter().filter(|b| hit(**b)).count();
+            let led = plan.iter().filter(|(t, m)| tl.lead_a[((t + 2.5) * FPS) as usize] as usize == *m).count();
+            let mut min_gap = f64::MAX; let mut max_v = 0.0f64;
+            for f in 1..tl.sim.frames { for a in 0..6 { let (ax, ay) = tl.sim.at(f, a); let (px, py) = tl.sim.at(f - 1, a); max_v = max_v.max((ax - px).hypot(ay - py) * FPS); for b in (a + 1)..6 { let (bx, by) = tl.sim.at(f, b); min_gap = min_gap.min((ax - bx).hypot(ay - by)); } } }
+            eprintln!("{map}: beats with a hit {}/{}  finish {:.2}s (target 27.5)  winner {}  planned leaders held {}/2  closest pair {:.0}px  top speed {:.0}px/s  crowd marbles {}  built in {:?}", covered, bs.len(), tl.win_time, tl.sim.winner, led, min_gap, max_v, tl.sim.n - 6, built);
+            assert_eq!(covered, bs.len(), "{map}: every beat needs a hit");
+            assert!((tl.win_time - 27.5).abs() < 1.2, "{map}: finish {}", tl.win_time);
+            assert_eq!(tl.sim.winner, 3, "{map}: winner");
+            assert!(min_gap >= 2.0 * RAD - 1.0, "{map}: marbles overlap ({min_gap})");
+        }
+    }
+
+    #[test]
+    fn warp_puts_impacts_on_the_beat() {
+        let beats: Vec<f64> = (0..70).map(|i| 0.4 + i as f64 * 60.0 / 128.0).collect();
+        for map in ["neon", "pachinko", "slide", "spinner", "funnel", "chaos"] {
+            let tl = build_timeline(&RaceSetup { seed: "sync-test", map, n: 6, len: 30.0, beats: &beats, plan: &[], winner: None, bars: &[], compose: false });
+            let (n, before, after, lo, hi) = alignment_stats(&tl, &beats);
+            let (cb, ca) = beat_coverage(&tl, &beats);
+            eprintln!("{map}: beats with a hit on them {:.0}% -> {:.0}%", cb * 100.0, ca * 100.0);
+            eprintln!("{map}: {n} strong impacts, on-beat before {:.0}% after {:.0}%, speed {:.2}x-{:.2}x", 100.0 * before as f64 / n as f64, 100.0 * after as f64 / n as f64, lo, hi);
+            assert!(after > before, "{map}: warping must help");
+            assert!(lo > 0.6 && hi < 1.6, "{map}: playback speed varies too much {lo} {hi}");
+        }
+    }
 }
