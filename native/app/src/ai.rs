@@ -44,12 +44,18 @@ const CORE: &[&str] = &[
 const CLONE: &[&str] = &["ai/vc/wavlm_mm8.part00", "ai/vc/wavlm_mm8.part01", "ai/vc/hifigan_knnvc.onnx"];
 
 /// Makes sure the runtime and models exist (downloading on first use) and starts ONNX Runtime.
-pub fn ensure(need_clone: bool, status: &dyn Fn(String)) -> Result<Models, String> {
+pub fn ensure(need_clone: bool, status: &dyn Fn(String)) -> Result<Models, String> { ensure_with(true, need_clone, status) }
+const LISTEN: &[&str] = &[
+    "ai/models/Xenova/whisper-tiny.en/onnx/encoder_model_quantized.onnx", "ai/models/Xenova/whisper-tiny.en/onnx/decoder_model_merged_quantized.onnx",
+    "ai/models/Xenova/whisper-tiny.en/tokenizer.json", "ai/models/Xenova/whisper-tiny.en/generation_config.json", "ai/sep/vocals.onnx",
+];
+pub fn ensure_with(need_tts: bool, need_clone: bool, status: &dyn Fn(String)) -> Result<Models, String> {
     let dir = ai_dir();
     // a local checkout of the web files works too (MARBEAT_AI_DIR points at the marbeat/ folder)
     let local = std::env::var("MARBEAT_AI_DIR").is_ok();
     if !local {
-        for rel in CORE.iter().chain(if need_clone { CLONE.iter() } else { [].iter() }) { fetch(rel, &dir.join(rel), status)?; }
+        let core: &[&str] = if need_tts { CORE } else { LISTEN };
+        for rel in core.iter().chain(if need_clone { CLONE.iter() } else { [].iter() }) { fetch(rel, &dir.join(rel), status)?; }
     }
     let lib = if let Ok(p) = std::env::var("ORT_DYLIB_PATH") { PathBuf::from(p) } else {
         let beside = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join(ort_name())));
@@ -129,4 +135,52 @@ pub fn run(stereo: &[f32], sr: u32, lyrics: &str, voices: &[Voice], leader_at: &
     let mut mixed = Vec::with_capacity(ml.len() * 2);
     for i in 0..ml.len() { mixed.push(ml[i] * k); mixed.push(mr[i] * k); }
     Ok(Result_ { mixed, lines: n, heard: heard.len() })
+}
+
+
+/// Listen to the song's vocals and return lyric lines with per-word times, for the human to check.
+/// With `pasted` lyrics, those words are aligned to what was heard instead of using the raw transcription.
+pub fn detect_lyrics(stereo: &[f32], sr: u32, pasted: Option<&str>, status: &dyn Fn(String)) -> Result<Vec<sing::Line>, String> {
+    let m = ensure_with(false, false, status)?;
+    let p = |rel: &str| m.dir.join("ai").join(rel).to_string_lossy().to_string();
+    status("Separating the vocals…".into());
+    let l0: Vec<f32> = stereo.chunks(2).map(|c| c[0]).collect();
+    let r0: Vec<f32> = stereo.chunks(2).map(|c| c[1]).collect();
+    let (l, r) = if sr == 44100 { (l0, r0) } else { (resample(&l0, sr, 44100), resample(&r0, sr, 44100)) };
+    let mut sep = Separator::load(&p("sep/vocals.onnx"))?;
+    let (vl, vr) = sep.vocals(&l, &r)?;
+    drop(sep);
+    let vmono: Vec<f32> = vl.iter().zip(&vr).map(|(a, b)| (a + b) * 0.5).collect();
+    let v16 = resample(&vmono, 44100, 16000);
+    status("Listening for words…".into());
+    let mut wh = Whisper::load(&p("models/Xenova/whisper-tiny.en"))?;
+    let heard = wh.transcribe(&v16)?;
+    drop(wh);
+    let total = l.len() as f64 / 44100.0;
+    let mut lines: Vec<sing::Line> = match pasted.filter(|t| !t.trim().is_empty()) {
+        Some(text) => sing::align(text, &heard, total),
+        None => {
+            let mut out: Vec<sing::Line> = vec![];
+            let mut cur: Vec<&marbeat_ai::whisper::Word> = vec![];
+            let flush = |cur: &mut Vec<&marbeat_ai::whisper::Word>, out: &mut Vec<sing::Line>| {
+                if cur.is_empty() { return; }
+                let words: Vec<(String, f64)> = cur.iter().map(|w| (w.text.clone(), w.start)).collect();
+                out.push(sing::Line { text: words.iter().map(|w| w.0.as_str()).collect::<Vec<_>>().join(" "), t0: cur[0].start, t1: cur.last().unwrap().end.min(cur.last().unwrap().start + 1.2), words });
+                cur.clear();
+            };
+            for (i, w) in heard.iter().enumerate() {
+                cur.push(w);
+                let gap = heard.get(i + 1).map(|n| n.start - w.end).unwrap_or(9.0);
+                let sentence_end = w.text.ends_with(['.', '!', '?']) && cur.len() >= 4;
+                if gap > 0.9 || cur.len() >= 9 || sentence_end { flush(&mut cur, &mut out); }
+            }
+            flush(&mut cur, &mut out);
+            out
+        }
+    };
+    if lines.is_empty() { return Err("no words were heard in this song".into()); }
+    sing::refine_starts(&mut lines, &v16);
+    // Whisper and the vocal stem both register words a little late; show them slightly ahead so the highlight lands on the sound
+    for l in &mut lines { l.t0 = (l.t0 - 0.15).max(0.0); l.t1 = (l.t1 - 0.1).max(l.t0 + 0.4); for w in &mut l.words { w.1 = (w.1 - 0.15).max(0.0); } }
+    Ok(lines)
 }

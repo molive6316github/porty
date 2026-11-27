@@ -103,3 +103,35 @@ pub fn load_song(path: &str) -> Result<Song, String> {
     let (beats, bpm) = find_beats(sr, &mono);
     Ok(Song { sr, mono, stereo, beats, bpm })
 }
+
+/// Bars (4 beats) of the song: returns (downbeat times, energy per bar). The downbeat phase is the one whose beats are loudest.
+pub fn bars(song: &Song) -> (Vec<f64>, Vec<f32>) {
+    let b = &song.beats;
+    if b.len() < 8 { return (vec![], vec![]); }
+    let hop = (song.sr as usize / 100).max(1);
+    let env: Vec<f32> = song.mono.chunks(hop).map(|c| (c.iter().map(|v| v * v).sum::<f32>() / c.len() as f32).sqrt()).collect();
+    let at = |t: f64| { let i = (t * 100.0) as usize; env[i.min(env.len() - 1)..(i + 6).min(env.len())].iter().cloned().fold(0.0f32, f32::max) };
+    let mut best = (0usize, -1.0f32);
+    for ph in 0..4 { let s: f32 = (ph..b.len()).step_by(4).map(|k| at(b[k])).sum(); if s > best.1 { best = (ph, s); } }
+    let downs: Vec<f64> = (best.0..b.len()).step_by(4).map(|k| b[k]).collect();
+    let energy: Vec<f32> = downs.iter().enumerate().map(|(i, &t0)| { let t1 = downs.get(i + 1).copied().unwrap_or(t0 + 2.0); let (a, z) = ((t0 * 100.0) as usize, ((t1 * 100.0) as usize).min(env.len())); if z > a { env[a..z].iter().sum::<f32>() / (z - a) as f32 } else { 0.0 } }).collect();
+    (downs, energy)
+}
+
+/// The song's big moments (drops, section changes), snapped to bar starts, at least `min_gap` seconds apart. Strongest energy jumps first.
+pub fn section_times(song: &Song, count: usize, min_gap: f64) -> Vec<f64> {
+    let (downs, e) = bars(song);
+    if downs.len() < 4 { return vec![]; }
+    // novelty: how much louder this bar is than the average of the previous two (and the reverse, for sudden drops)
+    let mut cand: Vec<(f32, f64)> = vec![];
+    for i in 2..downs.len() {
+        let prev = (e[i - 1] + e[i - 2]) * 0.5 + 1e-5;
+        cand.push(((e[i] / prev - 1.0).abs(), downs[i]));
+    }
+    cand.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+    let dur = song.mono.len() as f64 / song.sr as f64;
+    let mut out: Vec<f64> = vec![];
+    for (_, t) in cand { if t > 4.0 && t < dur - 8.0 && out.iter().all(|x| (x - t).abs() >= min_gap) { out.push(t); if out.len() >= count { break; } } }
+    out.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    out
+}

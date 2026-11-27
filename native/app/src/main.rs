@@ -73,15 +73,32 @@ struct App {
     ff_total: Arc<AtomicU64>,
     ff_msg: Arc<Mutex<String>>,
     singing: bool,
+    sync_music: bool,
+    av_offset_ms: i32,
+    show_lyrics: bool,
+    song_path: String,
+    lyric_lines: Vec<LyricLine>,
+    lyr_draft: Option<Vec<Draft>>,
+    lyr_paste: String,
+    lyr_busy: Arc<AtomicBool>,
+    lyr_status: Arc<Mutex<String>>,
+    lyr_out: Arc<Mutex<Option<Result<Vec<marbeat_ai::sing::Line>, String>>>>,
+    cur_plan: Vec<(f64, usize)>,
+    cur_winner: Option<usize>,
+    cur_len: f64,
     story: Option<StoryRun>,
     story_name: String,
     race_title: String,
 }
 
+/// A lyric line being checked by the human before it goes on screen.
+#[derive(Clone)]
+struct Draft { t0: f64, t1: f64, text: String, orig: Vec<(String, f64)>, orig_text: String }
+
 struct StoryRun { player: story::Player, saved_roster: Vec<([u8; 3], String)>, saved_n: usize, saved_rig: (bool, Option<usize>), blip_n: u32 }
 
 #[derive(Default)]
-struct Acts { rebuild: bool, load_path: Option<String>, toggled: bool, export: bool, save: bool, tour_next: bool, sing_go: bool, restart_audio: bool, seek: Option<f64> }
+struct Acts { confirm_lyrics: bool, rebuild: bool, load_path: Option<String>, toggled: bool, export: bool, save: bool, tour_next: bool, sing_go: bool, restart_audio: bool, seek: Option<f64> }
 
 #[derive(Clone, Default)]
 struct Tour { remaining: Vec<usize>, next: Vec<usize>, heat: usize, round: usize, log: Vec<String>, champion: Option<usize>, recorded: bool }
@@ -96,11 +113,12 @@ fn cfg_path() -> std::path::PathBuf {
 impl App {
     fn new() -> Self {
         let mut a = App { map: 0, seed: "42".into(), n: 6, len: 40.0, tl: None, beats: (0..2000).map(|i| i as f64 * 0.5).collect(), chars: vec![], r: Renderer::new(405, 720), tex: None, t: 0.0, playing: true, last: Instant::now(), song: None, status: "No song loaded".into(), _stream: OutputStream::try_default().ok(), sink: None, prog: Default::default(), total: Default::default(), cancel: Default::default(), exporting: Default::default(), result: Default::default(), hd: true, upd: Default::default(), upd_msg: Default::default(), upd_busy: Default::default(),
-            roster: (0..8).map(|i| (COLS[i], NAMES[i].to_string())).collect(), rig: false, plan: vec![], rig_winner: None, active: vec![], eff_seed: String::new(), tour: None, tab: 0, spk: vec![10, 25, 40, 60, 75, 90, 5, 100], clones: vec![None; 8], lyrics: String::new(), voiced: None, ai_status: Default::default(), ai_busy: Default::default(), ai_out: Default::default(), auto_update: true, update_url: String::new(), ffmpeg_path: String::new(), ff_found: Default::default(), ff_busy: Default::default(), upd_checking: Default::default(), upd_got: Default::default(), upd_total: Default::default(), toast: None, confirm_del: false, confirm_reset: false, ff_dl: Default::default(), ff_got: Default::default(), ff_total: Default::default(), ff_msg: Default::default(), singing: false, story: None, story_name: String::new(), race_title: "Marbeat".into() };
+            roster: (0..8).map(|i| (COLS[i], NAMES[i].to_string())).collect(), rig: false, plan: vec![], rig_winner: None, active: vec![], eff_seed: String::new(), tour: None, tab: 0, spk: vec![10, 25, 40, 60, 75, 90, 5, 100], clones: vec![None; 8], lyrics: String::new(), voiced: None, ai_status: Default::default(), ai_busy: Default::default(), ai_out: Default::default(), auto_update: true, update_url: String::new(), ffmpeg_path: String::new(), ff_found: Default::default(), ff_busy: Default::default(), upd_checking: Default::default(), upd_got: Default::default(), upd_total: Default::default(), toast: None, confirm_del: false, confirm_reset: false, ff_dl: Default::default(), ff_got: Default::default(), ff_total: Default::default(), ff_msg: Default::default(), singing: false, sync_music: true, av_offset_ms: 0, show_lyrics: true, song_path: String::new(), lyric_lines: vec![], lyr_draft: None, lyr_paste: String::new(), lyr_busy: Default::default(), lyr_status: Default::default(), lyr_out: Default::default(), cur_plan: vec![], cur_winner: None, cur_len: 40.0, story: None, story_name: String::new(), race_title: "Marbeat".into() };
         a.load_cfg();
         update::set_url(Some(a.update_url.clone()));
         marbeat_core::export::set_ffmpeg_override(Some(a.ffmpeg_path.clone()));
         if a.auto_update { a.check_updates(); }
+        if let Ok(sp) = std::env::var("MARBEAT_SONG") { a.load(&sp); if std::env::var("MARBEAT_DETECT").is_ok() { a.start_detect(None); } }
         if std::env::var("MARBEAT_STORY").is_ok() { let src = include_str!("../../assets/demo.story"); a.start_story(src, "Demo"); }
         a.detect_ffmpeg();
         if let Ok(t) = std::env::var("MARBEAT_TAB") { a.tab = t.parse().unwrap_or(0); }
@@ -129,6 +147,9 @@ impl App {
                 self.len = (s.mono.len() as f64 / s.sr as f64).min(300.0) as f32;
                 self.beats = s.beats.clone();
                 self.song = Some(s);
+                self.song_path = path.to_string();
+                self.lyr_draft = None;
+                self.load_saved_lyrics();
                 self.rebuild();
             }
             Err(e) => self.status = format!("Couldn't load: {e}"),
@@ -137,9 +158,10 @@ impl App {
     fn export(&mut self) {
         let Some(out) = rfd::FileDialog::new().add_filter("MP4 video", &["mp4"]).set_file_name("marbeat.mp4").save_file() else { return };
         let out = out.to_string_lossy().to_string();
-        let (key, seed, n, len, beats, hd) = (MAPS[self.map].key, self.eff_seed.clone(), self.active.len(), self.len as f64, self.beats.clone(), self.hd);
-        let plan: Vec<(f64, usize)> = if self.rig { self.plan.iter().cloned().filter(|(_, m)| *m < n).collect() } else { vec![] };
-        let rw = if self.rig { self.rig_winner.filter(|w| *w < n) } else { None };
+        let (key, seed, n, len, beats, hd) = (MAPS[self.map].key, self.eff_seed.clone(), self.active.len(), self.cur_len, self.beats.clone(), self.hd);
+        let plan = self.cur_plan.clone();
+        let rw = self.cur_winner;
+        let lyr = if self.show_lyrics { self.lyric_lines.clone() } else { vec![] };
         let song = self.song.as_ref().map(|s| Song { sr: s.sr, mono: vec![], stereo: self.voiced.clone().unwrap_or_else(|| s.stereo.clone()), beats: vec![], bpm: s.bpm });
         let chars: Vec<(String, [u8; 3])> = self.chars.iter().map(|c| (c.name.clone(), c.color)).collect();
         let title_s = self.race_title.clone();
@@ -150,7 +172,7 @@ impl App {
         std::thread::spawn(move || {
             let tl = build_timeline(&RaceSetup { seed: &seed, map: key, n, len, beats: &beats, plan: &plan, winner: rw });
             let cs: Vec<CharStyle> = chars.iter().map(|(n, c)| CharStyle { name: n.clone(), color: *c, label: "Marble".into() }).collect();
-            let sc = Scene { tl: &tl, chars: &cs, beats: &beats, title: "Marbeat", pro_post: true };
+            let sc = Scene { lyrics: &lyr, tl: &tl, chars: &cs, beats: &beats, title: &title_s, pro_post: true };
             let r = marbeat_core::export::export_mp4(&sc, song.as_ref(), &out, if hd { 2 } else { 1 }, |f, t| { prog.store(f, Ordering::Relaxed); total.store(t, Ordering::Relaxed); !cancel.load(Ordering::Relaxed) });
             *res.lock().unwrap() = Some(match r { Ok(()) => format!("Saved {out}"), Err(e) => format!("Export failed: {}", e.lines().next().unwrap_or("")) });
             busy.store(false, Ordering::SeqCst);
@@ -173,6 +195,9 @@ impl App {
                 if let Some(x) = j["update_url"].as_str() { self.update_url = x.into(); }
                 if let Some(x) = j["ffmpeg_path"].as_str() { self.ffmpeg_path = x.into(); }
                 if let Some(x) = j["singing"].as_bool() { self.singing = x; }
+                if let Some(x) = j["sync_music"].as_bool() { self.sync_music = x; }
+                if let Some(x) = j["show_lyrics"].as_bool() { self.show_lyrics = x; }
+                if let Some(x) = j["av_offset_ms"].as_i64() { self.av_offset_ms = x as i32; }
                 if let Some(x) = j["hd"].as_bool() { self.hd = x; }
                 if let Some(x) = j["seed"].as_str() { self.seed = x.into(); }
                 if let Some(x) = j["n"].as_u64() { self.n = (x as usize).clamp(2, 8); }
@@ -183,7 +208,7 @@ impl App {
     }
     fn save_cfg(&self) {
         if self.story.is_some() { return; }
-        let j = serde_json::json!({"roster": self.roster.iter().map(|(c, n)| serde_json::json!({"name": n, "color": c})).collect::<Vec<_>>(), "auto_update": self.auto_update, "update_url": self.update_url, "ffmpeg_path": self.ffmpeg_path, "hd": self.hd, "singing": self.singing, "speakers": self.spk, "clones": self.clones, "lyrics": self.lyrics, "seed": self.seed, "n": self.n, "map": self.map});
+        let j = serde_json::json!({"roster": self.roster.iter().map(|(c, n)| serde_json::json!({"name": n, "color": c})).collect::<Vec<_>>(), "auto_update": self.auto_update, "update_url": self.update_url, "ffmpeg_path": self.ffmpeg_path, "hd": self.hd, "singing": self.singing, "sync_music": self.sync_music, "show_lyrics": self.show_lyrics, "av_offset_ms": self.av_offset_ms, "speakers": self.spk, "clones": self.clones, "lyrics": self.lyrics, "seed": self.seed, "n": self.n, "map": self.map});
         let _ = std::fs::write(cfg_path(), j.to_string());
     }
     fn check_updates(&self) {
@@ -346,6 +371,75 @@ impl App {
             busy.store(false, Ordering::SeqCst);
         });
     }
+    /// Fully automatic music sync: the race runs the song's length and the winner crosses on the last beat; lead changes land
+    /// on bar starts at the song's biggest moments (drops, section changes) in a seeded order; beat kicks come from the beat grid.
+    fn auto_sync(&self, n: usize, key: &str) -> (Vec<(f64, usize)>, Option<usize>, f64) {
+        let song = self.song.as_ref().unwrap();
+        let dur = song.mono.len() as f64 / song.sr as f64;
+        let target = song.beats.iter().cloned().filter(|b| *b <= dur - 2.0 && *b > 10.0).last().unwrap_or((dur - 2.5).max(10.0));
+        let cuts = marbeat_core::audio::section_times(song, ((dur / 18.0) as usize).clamp(2, 10), 7.0);
+        let mut rng = marbeat_core::rng::Rng::new(marbeat_core::rng::hash_seed(&format!("{}|sync", self.eff_seed)));
+        let mut order: Vec<usize> = (0..n).collect();
+        for i in (1..n).rev() { let j = (rng.next() * (i + 1) as f64) as usize; order.swap(i, j.min(i)); }
+        let mut plan: Vec<(f64, usize)> = vec![];
+        let mut k = 0;
+        for t in cuts.iter().filter(|t| **t < target - 4.0) { k += 1; plan.push((*t, order[k % n])); }
+        // never the same marble twice in a row
+        for i in 1..plan.len() { if plan[i].1 == plan[i - 1].1 { plan[i].1 = (plan[i].1 + 1) % n; } }
+        let winner = plan.last().map(|p| p.1);
+        // fit the length so the finish lands on `target`
+        let mut len = target * 1.05;
+        for _ in 0..3 {
+            let tl = build_timeline(&RaceSetup { seed: &self.eff_seed, map: key, n, len, beats: &self.beats, plan: &plan, winner });
+            if (tl.win_time - target).abs() < 0.25 { break; }
+            len = (len * target / tl.win_time.max(1.0)).clamp(10.0, 320.0);
+        }
+        (plan, winner, len)
+    }
+    fn store_path() -> std::path::PathBuf { cfg_path().with_file_name("lyrics.json") }
+    fn save_lyrics(&self) {
+        if self.song_path.is_empty() { return; }
+        let mut j: serde_json::Value = std::fs::read_to_string(Self::store_path()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(serde_json::json!({}));
+        j[&self.song_path] = serde_json::json!(self.lyric_lines.iter().map(|l| serde_json::json!({"t0": l.t0, "t1": l.t1, "words": l.words})).collect::<Vec<_>>());
+        let _ = std::fs::write(Self::store_path(), j.to_string());
+    }
+    fn load_saved_lyrics(&mut self) {
+        self.lyric_lines.clear();
+        let Ok(t) = std::fs::read_to_string(Self::store_path()) else { return };
+        let Ok(j) = serde_json::from_str::<serde_json::Value>(&t) else { return };
+        if let Some(a) = j[&self.song_path].as_array() {
+            for l in a { self.lyric_lines.push(LyricLine { t0: l["t0"].as_f64().unwrap_or(0.0), t1: l["t1"].as_f64().unwrap_or(0.0), words: l["words"].as_array().map(|w| w.iter().map(|p| (p[0].as_str().unwrap_or("").to_string(), p[1].as_f64().unwrap_or(0.0))).collect()).unwrap_or_default() }); }
+        }
+    }
+    fn start_detect(&mut self, pasted: Option<String>) {
+        let Some(song) = &self.song else { return };
+        let (stereo, sr) = (song.stereo.clone(), song.sr);
+        let (st, busy, out) = (self.lyr_status.clone(), self.lyr_busy.clone(), self.lyr_out.clone());
+        busy.store(true, Ordering::SeqCst);
+        *st.lock().unwrap() = "Starting…".into();
+        std::thread::spawn(move || {
+            let st2 = st.clone();
+            let r = ai::detect_lyrics(&stereo, sr, pasted.as_deref(), &move |s| *st2.lock().unwrap() = s);
+            *out.lock().unwrap() = Some(r);
+            busy.store(false, Ordering::SeqCst);
+        });
+    }
+    fn confirm_draft(&mut self) {
+        let Some(d) = self.lyr_draft.take() else { return };
+        self.lyric_lines = d.iter().enumerate().filter(|(_, l)| !l.text.trim().is_empty()).map(|(i, l)| {
+            let t1 = d.get(i + 1).map(|n| n.t0 - 0.05).unwrap_or(l.t1).max(l.t0 + 0.4).min(l.t1.max(l.t0 + 0.4));
+            let words: Vec<(String, f64)> = if l.text == l.orig_text { l.orig.iter().map(|(w, t)| (w.clone(), *t + (l.t0 - l.orig.first().map(|f| f.1).unwrap_or(l.t0)))).collect() } else {
+                let ws: Vec<&str> = l.text.split_whitespace().collect();
+                let tot: usize = ws.iter().map(|w| w.chars().count() + 1).sum();
+                let mut acc = 0usize;
+                ws.iter().map(|w| { let t = l.t0 + (t1 - l.t0) * acc as f64 / tot.max(1) as f64; acc += w.chars().count() + 1; (w.to_string(), t) }).collect()
+            };
+            LyricLine { t0: l.t0, t1, words }
+        }).collect();
+        self.lyrics = d.iter().map(|l| l.text.clone()).collect::<Vec<_>>().join("\n");
+        self.save_lyrics();
+        self.say("Lyrics saved. They're on screen now.");
+    }
     fn rebuild(&mut self) {
         let key = MAPS[self.map].key;
         self.active = match &self.tour {
@@ -354,9 +448,14 @@ impl App {
         };
         let n = self.active.len();
         self.eff_seed = match &self.tour { Some(t) if t.champion.is_none() => format!("{}-r{}-h{}", self.seed, t.round, t.heat), _ => self.seed.clone() };
-        let plan: Vec<(f64, usize)> = if self.rig { self.plan.iter().cloned().filter(|(_, m)| *m < n).collect() } else { vec![] };
-        let winner = if self.rig { self.rig_winner.filter(|w| *w < n) } else { None };
-        self.tl = Some(build_timeline(&RaceSetup { seed: &self.eff_seed, map: key, n, len: self.len as f64, beats: &self.beats, plan: &plan, winner }));
+        let auto = self.sync_music && self.song.is_some() && self.story.is_none() && self.tour.is_none();
+        let (plan, winner, len) = if auto { self.auto_sync(n, key) } else {
+            let plan: Vec<(f64, usize)> = if self.rig { self.plan.iter().cloned().filter(|(_, m)| *m < n).collect() } else { vec![] };
+            (plan, if self.rig { self.rig_winner.filter(|w| *w < n) } else { None }, self.len as f64)
+        };
+        self.cur_plan = plan.clone(); self.cur_winner = winner; self.cur_len = len;
+        if auto { self.len = len as f32; }
+        self.tl = Some(build_timeline(&RaceSetup { seed: &self.eff_seed, map: key, n, len, beats: &self.beats, plan: &plan, winner }));
         self.chars = self.active.iter().map(|&i| CharStyle { name: self.roster[i].1.clone(), color: self.roster[i].0, label: if self.tour.is_some() { format!("Round {}", self.tour.as_ref().unwrap().round + 1) } else { "Marble".into() } }).collect();
         self.t = 0.0;
         self.playing = true;
@@ -432,6 +531,12 @@ impl App {
             if ui.add(egui::Slider::new(&mut self.n, 2..=8).text("marbles")).drag_stopped() { a.rebuild = true; a.save = true; }
             if ui.add(egui::Slider::new(&mut self.len, 15.0..=180.0).text("seconds")).drag_stopped() { a.rebuild = true; }
         });
+        card(ui, "Music sync", |ui| {
+            if ui.checkbox(&mut self.sync_music, "Sync the whole race to the music").changed() { a.rebuild = true; a.save = true; }
+            if self.song.is_none() { muted(ui, "Open a song and the race will fit it automatically."); }
+            else if self.sync_music { muted(ui, "The race runs the length of the song, lead changes land on bars at the song's big moments, and the winner crosses on the last beat."); }
+            else { muted(ui, "Off: you pick the length and use Director for lead changes."); }
+        });
         card(ui, "Render", |ui| {
             ui.horizontal(|ui| {
                 if ui.selectable_label(!self.hd, "Fast 540p").clicked() { self.hd = false; a.save = true; }
@@ -472,6 +577,7 @@ impl App {
     }
 
     fn rig_left(&mut self, ui: &mut egui::Ui, a: &mut Acts) {
+        if self.sync_music && self.song.is_some() { card(ui, "Music sync is on", |ui| { muted(ui, "The race is being timed to the song, so these manual settings are ignored. Turn off “Sync the whole race to the music” in Studio to use them."); }); }
         card(ui, "Rig the race", |ui| {
             ui.checkbox(&mut self.rig, "Control who leads and who wins");
             if self.rig {
@@ -482,7 +588,7 @@ impl App {
                     ui.horizontal(|ui| {
                         ui.add(egui::DragValue::new(t).speed(0.5).suffix(" s").range(0.0..=300.0));
                         egui::ComboBox::from_id_salt(k).selected_text(names.get(*m).cloned().unwrap_or_default()).show_ui(ui, |ui| { for (i, n) in names.iter().enumerate() { ui.selectable_value(m, i, n); } });
-                        if ghost(ui, "✕").clicked() { del = Some(k); }
+                        if ghost(ui, "X").clicked() { del = Some(k); }
                     });
                 }
                 if let Some(k) = del { self.plan.remove(k); }
@@ -513,6 +619,67 @@ impl App {
                 if ghost(ui, "Cancel tournament").clicked() { self.tour = None; a.rebuild = true; }
             }
         });
+    }
+
+    fn lyrics_left(&mut self, ui: &mut egui::Ui, a: &mut Acts) {
+        card(ui, "On screen", |ui| {
+            if ui.checkbox(&mut self.show_lyrics, "Show lyrics on the video").changed() { a.save = true; }
+            if self.lyric_lines.is_empty() { muted(ui, "No lyrics yet. Detect them below, then check them."); }
+            else {
+                good(ui, format!("{} lines ready", self.lyric_lines.len()));
+                ui.horizontal(|ui| {
+                    if ghost(ui, "Edit").clicked() {
+                        self.lyr_draft = Some(self.lyric_lines.iter().map(|l| { let text = l.words.iter().map(|w| w.0.as_str()).collect::<Vec<_>>().join(" "); Draft { t0: l.t0, t1: l.t1, text: text.clone(), orig: l.words.clone(), orig_text: text } }).collect());
+                    }
+                    if ghost(ui, "Remove").clicked() { self.lyric_lines.clear(); self.save_lyrics(); }
+                });
+            }
+        });
+        if self.lyr_draft.is_none() {
+            card(ui, "Find the lyrics", |ui| {
+                if self.lyr_busy.load(Ordering::Relaxed) {
+                    ui.horizontal(|ui| { ui.spinner(); ui.label(self.lyr_status.lock().unwrap().clone()); });
+                } else {
+                    let have = self.song.is_some();
+                    if ui.add_enabled(have, egui::Button::new(egui::RichText::new("Listen and detect lyrics").strong().color(egui::Color32::WHITE)).fill(ACCENT).min_size(egui::vec2(ui.available_width().min(260.0), 36.0))).clicked() { self.start_detect(None); }
+                    if !have { muted(ui, "Open a song in Studio first."); }
+                    muted(ui, "The AI listens to the vocals and writes down the words with their timing. You check and fix them before anything shows on screen.");
+                    ui.collapsing("I already have the lyrics", |ui| {
+                        ui.add(egui::TextEdit::multiline(&mut self.lyr_paste).desired_rows(6).desired_width(f32::INFINITY).hint_text("Paste lyrics, one line per row"));
+                        if ui.add_enabled(have && !self.lyr_paste.trim().is_empty(), egui::Button::new("Sync these to the song")).clicked() { let t = self.lyr_paste.clone(); self.start_detect(Some(t)); }
+                    });
+                    let st = self.lyr_status.lock().unwrap().clone(); if !st.is_empty() { muted(ui, st); }
+                    muted(ui, "First use downloads the listening models (about 80 MB).");
+                }
+            });
+        }
+        if self.lyr_draft.is_some() {
+            card(ui, "Check the lyrics", |ui| {
+                ui.label(egui::RichText::new("The AI mishears sung words. Fix anything wrong, then confirm.").color(WARN).size(13.0));
+                muted(ui, "Press ▶ on a line to hear it. The preview shows the lyrics as they will look.");
+                let mut seek = None; let mut del = None;
+                if let Some(d) = &mut self.lyr_draft {
+                    egui::ScrollArea::vertical().max_height(380.0).show(ui, |ui| {
+                        for (i, l) in d.iter_mut().enumerate() {
+                            ui.horizontal(|ui| {
+                                if ghost(ui, "▶").clicked() { seek = Some((l.t0 - 0.6).max(0.0)); }
+                                ui.add(egui::DragValue::new(&mut l.t0).speed(0.05).suffix(" s").fixed_decimals(1));
+                                if ghost(ui, "Delete").clicked() { del = Some(i); }
+                            });
+                            ui.add(egui::TextEdit::singleline(&mut l.text).desired_width(f32::INFINITY));
+                            ui.add_space(4.0);
+                        }
+                    });
+                    if let Some(i) = del { d.remove(i); }
+                    if ghost(ui, "+ Add a line").clicked() { let t = d.last().map(|l| l.t1 + 1.0).unwrap_or(1.0); d.push(Draft { t0: t, t1: t + 3.0, text: String::new(), orig: vec![], orig_text: String::new() }); }
+                }
+                if let Some(t) = seek { a.seek = Some(t); }
+                ui.horizontal(|ui| {
+                    if primary_w(ui, "Looks right, show them", 190.0).clicked() { a.confirm_lyrics = true; }
+                    if ghost(ui, "Discard").clicked() { self.lyr_draft = None; }
+                });
+            });
+        }
     }
 
     fn voices_left(&mut self, ui: &mut egui::Ui, a: &mut Acts) {
@@ -672,6 +839,16 @@ impl App {
                 });
                 ui.add_space(10.0);
 
+                // ---- music sync
+                card(ui, "Music sync", |ui| {
+                    if ui.checkbox(&mut self.sync_music, "Sync the whole race to the music automatically").changed() { a.rebuild = true; a.save = true; }
+                    muted(ui, "Length, lead changes and the finish are timed to the song you open.");
+                    row_label(ui, "Picture vs sound timing (preview only)");
+                    if ui.add(egui::Slider::new(&mut self.av_offset_ms, -300..=300).suffix(" ms")).changed() { a.save = true; }
+                    muted(ui, "If the marbles hit things slightly before or after the beat you hear, nudge this. Rendered videos are always aligned.");
+                });
+                ui.add_space(10.0);
+
                 // ---- voices
                 card(ui, "Voices", |ui| {
                     if ui.checkbox(&mut self.singing, "Let the marbles sing the lyrics (experimental)").changed() { a.save = true; }
@@ -730,8 +907,8 @@ impl eframe::App for App {
                 ui.painter().circle_filled(r.center() + egui::vec2(-4.0, -4.0), 3.6, egui::Color32::from_white_alpha(200));
                 ui.label(egui::RichText::new("Marbeat").size(20.0).strong());
                 ui.add_space(18.0);
-                for (i, l) in ["Studio", "Cast", "Director", "Tournament", "Voices", "Story", "Settings"].iter().enumerate() {
-                    if tab(ui, self.tab == i as u8, l) { self.tab = i as u8; }
+                for (i, l) in [(0u8, "Studio"), (7, "Lyrics"), (1, "Cast"), (2, "Director"), (3, "Tournament"), (5, "Story"), (4, "Voices"), (6, "Settings")] {
+                    if tab(ui, self.tab == i, l) { self.tab = i; }
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if self.upd.lock().unwrap().is_some() {
@@ -747,7 +924,7 @@ impl eframe::App for App {
         if self.tab != 6 {
             egui::SidePanel::left("left").exact_width(318.0).frame(egui::Frame::none().fill(BG).inner_margin(egui::Margin::same(14.0))).show(ctx, |ui| {
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                    match self.tab { 1 => self.cast_left(ui, &mut a), 2 => self.rig_left(ui, &mut a), 3 => self.cup_left(ui, &mut a), 4 => self.voices_left(ui, &mut a), 5 => self.story_left(ui, &mut a), _ => self.studio_left(ui, &mut a) }
+                    match self.tab { 1 => self.cast_left(ui, &mut a), 2 => self.rig_left(ui, &mut a), 3 => self.cup_left(ui, &mut a), 4 => self.voices_left(ui, &mut a), 5 => self.story_left(ui, &mut a), 7 => self.lyrics_left(ui, &mut a), _ => self.studio_left(ui, &mut a) }
                 });
             });
         }
@@ -761,8 +938,14 @@ impl eframe::App for App {
             // draw the frame before the panel that shows it
             self.r.hide_hud = self.story.as_ref().map(|r| !r.player.in_race()).unwrap_or(false);
             if let Some(tl) = &self.tl {
-                let sc = Scene { tl, chars: &self.chars, beats: &self.beats, title: &self.race_title, pro_post: false };
-                self.r.draw(&sc, self.t);
+                let empty: Vec<LyricLine> = vec![];
+                let drafted: Vec<LyricLine> = match &self.lyr_draft { Some(d) => d.iter().enumerate().filter(|(_, l)| !l.text.trim().is_empty()).map(|(i, l)| {
+                    let t1 = d.get(i + 1).map(|n| n.t0 - 0.05).unwrap_or(l.t1).max(l.t0 + 0.4);
+                    let ws: Vec<&str> = l.text.split_whitespace().collect(); let tot: usize = ws.iter().map(|w| w.chars().count() + 1).sum(); let mut acc = 0usize;
+                    LyricLine { t0: l.t0, t1, words: ws.iter().map(|w| { let t = l.t0 + (t1 - l.t0) * acc as f64 / tot.max(1) as f64; acc += w.chars().count() + 1; (w.to_string(), t) }).collect() }
+                }).collect(), None => vec![] };
+                let sc = Scene { lyrics: if self.lyr_draft.is_some() { &drafted } else if self.show_lyrics { &self.lyric_lines } else { &empty }, tl, chars: &self.chars, beats: &self.beats, title: &self.race_title, pro_post: false };
+                self.r.draw(&sc, (self.t + self.av_offset_ms as f64 / 1000.0).max(0.0));
             }
             if let Some(run) = &self.story {
                 if let Some((sp, shown, complete)) = run.player.view() {
@@ -805,6 +988,18 @@ impl eframe::App for App {
         }
 
         // ---- actions
+        if a.confirm_lyrics { self.confirm_draft(); }
+        if let Some(t) = a.seek.take() { self.t = t; self.playing = true; self.start_audio(); }
+        let det = self.lyr_out.lock().unwrap().take();
+        if let Some(r) = det {
+            match r {
+                Ok(lines) => {
+                    *self.lyr_status.lock().unwrap() = format!("Heard {} lines. Please check them.", lines.len());
+                    self.lyr_draft = Some(lines.into_iter().map(|l| Draft { t0: l.t0, t1: l.t1, text: l.text.clone(), orig: l.words, orig_text: l.text }).collect());
+                }
+                Err(e) => *self.lyr_status.lock().unwrap() = format!("Couldn't detect lyrics: {e}"),
+            }
+        }
         if click_adv { if let Some(run) = &mut self.story { let evs = run.player.advance(); self.story_events(evs); } }
         if a.save { self.save_cfg(); }
         if a.sing_go { self.start_sing(); }
@@ -841,6 +1036,28 @@ fn main() -> eframe::Result {
         match r {
             Ok(o) => { eprintln!("ok {} lines, {} words heard, {:?}", o.lines, o.heard, t0.elapsed()); let mut f = std::fs::File::create(&args[i + 3]).unwrap(); let n = o.mixed.len(); use std::io::Write; f.write_all(b"RIFF").unwrap(); f.write_all(&(36 + n as u32 * 2).to_le_bytes()).unwrap(); f.write_all(b"WAVEfmt ").unwrap(); f.write_all(&16u32.to_le_bytes()).unwrap(); f.write_all(&1u16.to_le_bytes()).unwrap(); f.write_all(&2u16.to_le_bytes()).unwrap(); f.write_all(&song.sr.to_le_bytes()).unwrap(); f.write_all(&(song.sr * 4).to_le_bytes()).unwrap(); f.write_all(&4u16.to_le_bytes()).unwrap(); f.write_all(&16u16.to_le_bytes()).unwrap(); f.write_all(b"data").unwrap(); f.write_all(&(n as u32 * 2).to_le_bytes()).unwrap(); for v in o.mixed { f.write_all(&((v.clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes()).unwrap(); } }
             Err(e) => { eprintln!("FAILED: {e}"); std::process::exit(1); }
+        }
+        return Ok(());
+    }
+    if let Some(i) = args.iter().position(|a| a == "--detect") {
+        let song = marbeat_core::audio::load_song(&args[i + 1]).expect("song");
+        let pasted = args.get(i + 2).and_then(|f| std::fs::read_to_string(f).ok());
+        match ai::detect_lyrics(&song.stereo, song.sr, pasted.as_deref(), &|s| eprintln!("{s}")) {
+            Ok(lines) => for l in lines { println!("{:6.2}-{:6.2}  {}", l.t0, l.t1, l.text); },
+            Err(e) => { eprintln!("FAILED: {e}"); std::process::exit(1); }
+        }
+        return Ok(());
+    }
+    if let Some(i) = args.iter().position(|a| a == "--sync-test") {
+        let mut a = App::new();
+        for map in 0..MAPS.len() {
+            a.map = map; a.load(&args[i + 1]);
+            let dur = a.song.as_ref().map(|s| s.mono.len() as f64 / s.sr as f64).unwrap_or(0.0);
+            let last = a.song.as_ref().and_then(|s| s.beats.iter().cloned().filter(|b| *b <= dur - 2.0).last()).unwrap_or(0.0);
+            let tl = a.tl.as_ref().unwrap();
+            let held: Vec<bool> = a.cur_plan.iter().map(|(t, m)| { let f = (((t + 2.0) * 60.0) as usize).min(tl.lead_a.len() - 1); tl.lead_a[f] as usize == *m }).collect();
+            println!("landed {:?} (held 2s later: {:?})", tl.landed, held);
+            println!("{:9} song {:.1}s last beat {:.2}s -> winner crosses {:.2}s (len {:.1}), lead changes {:?}, winner idx {:?} sim.winner {}", MAPS[map].key, dur, last, tl.win_time, a.cur_len, a.cur_plan.iter().map(|p| (format!("{:.1}", p.0), p.1)).collect::<Vec<_>>(), a.cur_winner, tl.sim.winner);
         }
         return Ok(());
     }

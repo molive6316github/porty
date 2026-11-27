@@ -350,7 +350,8 @@ pub fn build_timeline(s: &RaceSetup) -> Timeline {
     if !keys.is_empty() {
         let mut factor = sim.twin / (len - 2.0).max(1.0);
         let mut best_sc: Option<(usize, Sim)> = None;
-        for k in 0..16u32 {
+        let tries = 16 + 6 * keys.len().min(5) as u32; // more rigged moments need more attempts to line up
+        for k in 0..tries {
             let sc: Vec<SchedKey> = keys.iter().map(|(t, m)| SchedKey { ts: t * factor - 2.4, m: *m }).collect();
             let s2 = simulate(&course, n, s.beats, base.wrapping_add(k.wrapping_mul(7919)), s.seed, len * 3.0, Some(&sc));
             let f2 = s2.twin / (len - 2.0).max(1.0);

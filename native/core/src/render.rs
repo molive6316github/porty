@@ -10,7 +10,12 @@ pub struct CharStyle {
     pub label: String, // second line in the banner (e.g. the voice)
 }
 
+/// One on-screen lyric line with a start time per word (for karaoke highlighting).
+#[derive(Clone, Debug, Default)]
+pub struct LyricLine { pub t0: f64, pub t1: f64, pub words: Vec<(String, f64)> }
+
 pub struct Scene<'a> {
+    pub lyrics: &'a [LyricLine],
     pub tl: &'a Timeline,
     pub chars: &'a [CharStyle],
     pub beats: &'a [f64],
@@ -334,12 +339,49 @@ impl Renderer {
         self.text(nm, sx, sy, 14.0, [255, 255, 255], 1.0, Align::Center, false);
 
         if !self.hide_hud { self.hud(sc, &p, &order, leader, t, pulse); }
+        if !self.hide_hud { self.lyrics_overlay(sc.lyrics, t); }
         self.confetti(tl.win_time, t, sc);
         self.title_card(t, sc.title);
         // vignette
         let vg = Paint { shader: radial(W as f32 / 2.0, H as f32 / 2.0, H as f32 * 0.72, vec![(0.0, Color::from_rgba8(0, 0, 0, 0)), (0.39, Color::from_rgba8(0, 0, 0, 0)), (1.0, Color::from_rgba8(0, 0, 0, 128))]), ..Paint::default() };
         self.pm.fill_rect(Rect::from_xywh(0.0, 0.0, W as f32, H as f32).unwrap(), &vg, base, None);
         if sc.pro_post { self.post(); }
+    }
+
+    /// Karaoke lyrics: the current line big with sung words lit, the next line small. Fades in and out.
+    pub fn lyrics_overlay(&mut self, lines: &[LyricLine], t: f64) {
+        let Some(i) = lines.iter().position(|l| t >= l.t0 - 0.35 && t <= l.t1 + 0.5) else { return };
+        let l = &lines[i];
+        let a = (((t - (l.t0 - 0.35)) / 0.25).min(1.0).min((l.t1 + 0.5 - t) / 0.3)).clamp(0.0, 1.0) as f32;
+        let size = 30.0;
+        // split into at most two balanced rows
+        let words: Vec<&str> = l.words.iter().map(|w| w.0.as_str()).collect();
+        let total: f32 = words.iter().map(|w| self.text_width(w, size) + 9.0).sum();
+        let mut rows: Vec<Vec<usize>> = vec![vec![]];
+        let mut acc = 0.0;
+        for (k, w) in words.iter().enumerate() {
+            let ww = self.text_width(w, size) + 9.0;
+            if total > 470.0 && acc + ww > total / 2.0 + 20.0 && !rows.last().unwrap().is_empty() && rows.len() < 2 { rows.push(vec![]); acc = 0.0; }
+            rows.last_mut().unwrap().push(k); acc += ww;
+        }
+        let nrows = rows.len() as f32;
+        let mut y = 640.0 - (nrows - 1.0) * 38.0;
+        for row in rows {
+            let rw: f32 = row.iter().map(|&k| self.text_width(words[k], size) + 9.0).sum::<f32>() - 9.0;
+            let mut x = W as f32 / 2.0 - rw / 2.0;
+            for k in row {
+                let lit = t >= l.words[k].1;
+                let col = if lit { [77, 255, 176] } else { [255, 255, 255] };
+                self.text(words[k], x, y, size, col, a * if lit { 1.0 } else { 0.82 }, Align::Left, true);
+                x += self.text_width(words[k], size) + 9.0;
+            }
+            y += 38.0;
+        }
+        if let Some(n) = lines.get(i + 1) { if t >= l.t1 - 1.5 && t < n.t0 {
+            let txt: String = n.words.iter().map(|w| w.0.as_str()).collect::<Vec<_>>().join(" ");
+            let txt = if txt.chars().count() > 38 { format!("{}…", txt.chars().take(36).collect::<String>()) } else { txt };
+            self.text(&txt, W as f32 / 2.0, y + 6.0, 19.0, [255, 255, 255], 0.5 * a.max(0.4), Align::Center, true);
+        } }
     }
 
     /// Undertale-style dialogue box: black panel, white border, speaker portrait + name, typewriter text, blinking arrow.
