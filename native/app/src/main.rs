@@ -136,7 +136,7 @@ fn cfg_path() -> std::path::PathBuf {
 impl App {
     fn new() -> Self {
         let mut a = App { map: 0, seed: "42".into(), n: 6, len: 40.0, tl: None, beats: (0..2000).map(|i| i as f64 * 0.5).collect(), chars: vec![], r: Renderer::new(405, 720), tex: None, t: 0.0, playing: true, last: Instant::now(), song: None, status: "No song loaded".into(), _stream: OutputStream::try_default().ok(), sink: None, prog: Default::default(), total: Default::default(), cancel: Default::default(), exporting: Default::default(), result: Default::default(), hd: true, upd: Default::default(), upd_msg: Default::default(), upd_busy: Default::default(),
-            roster: (0..8).map(|i| (COLS[i], NAMES[i].to_string())).collect(), rig: false, plan: vec![], rig_winner: None, active: vec![], eff_seed: String::new(), tour: None, tab: 0, spk: vec![10, 25, 40, 60, 75, 90, 5, 100], clones: vec![None; 8], lyrics: String::new(), voiced: None, ai_status: Default::default(), ai_busy: Default::default(), ai_out: Default::default(), auto_update: true, update_url: String::new(), ffmpeg_path: String::new(), ff_found: Default::default(), ff_busy: Default::default(), upd_checking: Default::default(), upd_got: Default::default(), upd_total: Default::default(), toast: None, confirm_del: false, confirm_reset: false, ff_dl: Default::default(), ff_got: Default::default(), ff_total: Default::default(), ff_msg: Default::default(), singing: false, crowd: false, sync_style: 1, sync_music: true, av_offset_ms: 0, show_lyrics: true, song_path: String::new(), lyric_lines: vec![], lyr_draft: None, lyr_paste: String::new(), lyr_busy: Default::default(), lyr_status: Default::default(), lyr_out: Default::default(), cur_plan: vec![], cur_winner: None, cur_len: 40.0, cur_bars: vec![], cur_compose: false, story: None, story_name: String::new(), race_title: "Marbeat".into(), audio_t0: 0.0, proj_path: None, proj_name: String::new(), proj_dirty: false, proj_story: String::new(), proj_rename: None, proj_del: None, new_name: String::new(), st_edit: None, st_del: None, lists: None, last_export: None, export_start: None, recent: vec![], show_keys: false };
+            roster: (0..8).map(|i| (COLS[i], NAMES[i].to_string())).collect(), rig: false, plan: vec![], rig_winner: None, active: vec![], eff_seed: String::new(), tour: None, tab: 0, spk: vec![10, 25, 40, 60, 75, 90, 5, 100], clones: vec![None; 8], lyrics: String::new(), voiced: None, ai_status: Default::default(), ai_busy: Default::default(), ai_out: Default::default(), auto_update: true, update_url: String::new(), ffmpeg_path: String::new(), ff_found: Default::default(), ff_busy: Default::default(), upd_checking: Default::default(), upd_got: Default::default(), upd_total: Default::default(), toast: None, confirm_del: false, confirm_reset: false, ff_dl: Default::default(), ff_got: Default::default(), ff_total: Default::default(), ff_msg: Default::default(), singing: false, crowd: false, sync_style: 0, sync_music: true, av_offset_ms: 0, show_lyrics: true, song_path: String::new(), lyric_lines: vec![], lyr_draft: None, lyr_paste: String::new(), lyr_busy: Default::default(), lyr_status: Default::default(), lyr_out: Default::default(), cur_plan: vec![], cur_winner: None, cur_len: 40.0, cur_bars: vec![], cur_compose: false, story: None, story_name: String::new(), race_title: "Marbeat".into(), audio_t0: 0.0, proj_path: None, proj_name: String::new(), proj_dirty: false, proj_story: String::new(), proj_rename: None, proj_del: None, new_name: String::new(), st_edit: None, st_del: None, lists: None, last_export: None, export_start: None, recent: vec![], show_keys: false };
         a.load_cfg();
         update::set_url(Some(a.update_url.clone()));
         marbeat_core::export::set_ffmpeg_override(Some(a.ffmpeg_path.clone()));
@@ -231,7 +231,7 @@ impl App {
                 if let Some(x) = j["singing"].as_bool() { self.singing = x; }
                 if let Some(x) = j["sync_music"].as_bool() { self.sync_music = x; }
                 if let Some(x) = j["crowd"].as_bool() { self.crowd = x; }
-                if let Some(x) = j["sync_style"].as_u64() { if j["v15_lanes"].as_bool().unwrap_or(false) { self.sync_style = (x as u8).min(1); } }
+                if let Some(x) = j["sync_style"].as_u64() { if j["v22_track"].as_bool().unwrap_or(false) { self.sync_style = (x as u8).min(1); } }
                 if let Some(r) = j["recent"].as_array() { self.recent = r.iter().filter_map(|x| x.as_str().map(String::from)).collect(); }
                 if let Some(x) = j["last_export"].as_str() { self.last_export = Some(x.into()); }
                 if let Some(x) = j["last_project"].as_str() { let p = std::path::PathBuf::from(x); if p.exists() { self.proj_path = Some(p); } }
@@ -247,7 +247,7 @@ impl App {
     }
     fn save_cfg(&self) {
         if self.story.is_some() { return; }
-        let j = serde_json::json!({"roster": self.roster.iter().map(|(c, n)| serde_json::json!({"name": n, "color": c})).collect::<Vec<_>>(), "auto_update": self.auto_update, "update_url": self.update_url, "ffmpeg_path": self.ffmpeg_path, "hd": self.hd, "singing": self.singing, "sync_music": self.sync_music, "crowd": self.crowd, "sync_style": self.sync_style, "show_lyrics": self.show_lyrics, "av_offset_ms": self.av_offset_ms, "speakers": self.spk, "clones": self.clones, "lyrics": self.lyrics, "seed": self.seed, "n": self.n, "map": self.map, "v15_lanes": true, "recent": self.recent, "last_export": self.last_export, "last_project": self.proj_path.as_ref().map(|p| p.to_string_lossy().to_string())});
+        let j = serde_json::json!({"roster": self.roster.iter().map(|(c, n)| serde_json::json!({"name": n, "color": c})).collect::<Vec<_>>(), "auto_update": self.auto_update, "update_url": self.update_url, "ffmpeg_path": self.ffmpeg_path, "hd": self.hd, "singing": self.singing, "sync_music": self.sync_music, "crowd": self.crowd, "sync_style": self.sync_style, "show_lyrics": self.show_lyrics, "av_offset_ms": self.av_offset_ms, "speakers": self.spk, "clones": self.clones, "lyrics": self.lyrics, "seed": self.seed, "n": self.n, "map": self.map, "v22_track": true, "recent": self.recent, "last_export": self.last_export, "last_project": self.proj_path.as_ref().map(|p| p.to_string_lossy().to_string())});
         let _ = std::fs::write(cfg_path(), j.to_string());
     }
     fn check_updates(&self) {
@@ -407,7 +407,7 @@ impl App {
         self.rig_winner = j["rig_winner"].as_u64().map(|x| x as usize);
         self.plan = j["plan"].as_array().map(|a| a.iter().filter_map(|p| Some((p[0].as_f64()?, p[1].as_u64()? as usize))).collect()).unwrap_or_default();
         self.sync_music = j["sync_music"].as_bool().unwrap_or(true);
-        self.sync_style = (j["sync_style"].as_u64().unwrap_or(1) as u8).min(1);
+        self.sync_style = (j["sync_style"].as_u64().unwrap_or(0) as u8).min(1);
         self.crowd = j["crowd"].as_bool().unwrap_or(false);
         self.show_lyrics = j["show_lyrics"].as_bool().unwrap_or(true);
         if let Some(h) = j["hd"].as_bool() { self.hd = h; }
@@ -812,8 +812,12 @@ impl App {
             if ui.checkbox(&mut self.sync_music, "Sync the whole race to the music").changed() { a.rebuild = true; a.save = true; }
             if self.song.is_none() { muted(ui, "Open a song and the race will fit it automatically."); }
             else if self.sync_music {
-                self.sync_style = 1;
-                muted(ui, "Every marble hits pads on its own beat pattern, wandering across the whole track and passing each other. Every hit sits on the beat grid and the winner crosses on the last beat.");
+                ui.horizontal(|ui| {
+                    if ui.selectable_label(self.sync_style == 0, "Track race").clicked() { self.sync_style = 0; a.rebuild = true; a.save = true; }
+                    if ui.selectable_label(self.sync_style == 1, "Lane pads").clicked() { self.sync_style = 1; a.rebuild = true; a.save = true; }
+                });
+                if self.sync_style == 0 { muted(ui, "A winding track of ramps and trampolines. Marbles roll down it, bump and shove each other, leapfrog, and tap the beat on their own grooves. Falls and bounces land on the beat and the winner crosses on the last beat."); }
+                else { muted(ui, "Every marble hits pads on its own beat pattern, wandering across the whole track and passing each other. Every hit sits on the beat grid and the winner crosses on the last beat."); }
             }
             else { muted(ui, "Off: you pick the length and use Director for lead changes."); }
         });

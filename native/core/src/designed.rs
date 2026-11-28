@@ -268,13 +268,13 @@ pub fn build(cfg: &DesignCfg) -> Option<Designed> {
     }
     // slot delays on the sixteenth-note grid, at least half a beat apart, chosen one after another so that every gap between two slots
     // keeps the marbles clear of each other. A swap only exchanges two marbles' slots, so these gaps never change.
-    let span_limit = 2.5; // seconds the last marble may trail by
+    let span_limit = 1.3; // seconds the last marble may trail by
     let slots: Vec<f64> = {
         let mut best: Vec<f64> = vec![];
         'margins: for &need in &[34.0f64, 30.0, 27.0, 22.0, 14.0, 0.0] {
             let mut sl: Vec<f64> = vec![0.0];
             for _ in 1..n {
-                let mut d = sl.last().unwrap() + 0.5 * period;
+                let mut d = sl.last().unwrap() + 0.25 * period;
                 let mut ok = false;
                 while d <= span_limit {
                     if sl.iter().all(|&e| self_dist(d - e) >= need) { ok = true; break; }
@@ -432,7 +432,83 @@ pub fn build(cfg: &DesignCfg) -> Option<Designed> {
         tcur = t1 + 0.8;
     }
     if std::env::var("MARBEAT_DEBUG_DESIGN").is_ok() { eprintln!("leap swaps: windows found {}, made {}, refused for crowding {}", dbg_windows, dbg_swaps, dbg_rejected); }
-    let (pos, touch, rank) = record(&delays, &leaps, &q);
+    let (mut pos, mut touch, rank) = record(&delays, &leaps, &q);
+    let mut hop_events: Vec<Event> = vec![];
+    // ----- every marble taps the track on its own groove while it rolls: small hops landing on the beat grid, each marble with its own pattern
+    {
+        const PAT: [&[f64]; 8] = [&[0.0, 1.0, 2.0, 3.0], &[0.0, 2.0], &[0.5, 1.5, 2.5, 3.5], &[0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5], &[0.0, 1.5, 2.0, 3.5], &[1.0, 3.0], &[0.0, 1.0, 1.5, 3.0], &[0.0, 0.5, 2.0, 2.5]];
+        let busy = [0usize, 2, 4, 6, 7];
+        let slow = [1usize, 5];
+        let mut hits_at = vec![0u8; ef + 2];
+        for ev in &reference.events { for i in 0..n { let t = ev.f as f64 / FPS + delays[i].at(ev.f as f64 / FPS); let fr = (t * FPS).round() as usize; if fr < ef { hits_at[fr] += 1; } } }
+        let mut own: Vec<Vec<usize>> = vec![vec![]; n]; // frames of each marble's own impacts, to keep hops clear of landings
+        for ev in &reference.events { for i in 0..n { let t = ev.f as f64 / FPS + delays[i].at(ev.f as f64 / FPS); let fr = (t * FPS).round() as usize; if fr < ef { own[i].push(fr); } } }
+        let groups = cfg.beats.len() / 4;
+        for g in 0..groups {
+            let b0 = cfg.beats[g * 4];
+            if b0 < 2.4 || b0 > target - 1.5 { continue; }
+            let it = inten(cfg.bars, b0);
+            // calm music: mostly slow grooves; loud music lets a few marbles play four-hit patterns
+            let busy_n = if it < 0.3 { 0 } else if it < 0.7 { 2 } else { 3 };
+            let mut who: Vec<usize> = (0..n).collect();
+            for k in (1..who.len()).rev() { let j = (rng.next() * (k + 1) as f64) as usize; who.swap(k, j.min(k)); }
+            for (rank, &m) in who.iter().enumerate() {
+                let pat = if rank < busy_n { busy[(rng.next() * busy.len() as f64) as usize % busy.len()] } else { slow[(rng.next() * 2.0) as usize % 2] };
+                for off in PAT[pat] {
+                    let bi = g * 4 + off.floor() as usize;
+                    let (ta, tb) = (cfg.beats[bi], cfg.beats.get(bi + 1).copied().unwrap_or(cfg.beats[bi] + period));
+                    let t = ta + (tb - ta) * off.fract();
+                    let fe = (t * FPS).round() as usize;
+                    let fs = fe.saturating_sub(10);
+                    if fe + 2 >= ef || fs < 2 { continue; }
+                    // must be rolling the whole time, clear of its own landings, and never more than two marbles hitting at once
+                    if (fs..=fe).filter(|f| touch[f * n + m] == 0).count() > 2 { continue; }
+                    if own[m].iter().any(|&o| o + 6 > fs && o < fe + 8) { continue; }
+                    if hits_at[fe] >= 2 { continue; }
+                    let ty = pos[(fe * n + m) * 2 + 1] as f64;
+                    if ty > finish_y - 90.0 { continue; }
+                    let h = 5.0 + 6.0 * rng.next();
+                    for f in fs..=fe { let u = (f - fs) as f64 / (fe - fs) as f64; pos[(f * n + m) * 2 + 1] -= (h * (std::f64::consts::PI * u).sin()) as f32; if f + 1 < fe { touch[f * n + m] = 0; } }
+                    hits_at[fe] += 1; own[m].push(fe);
+                    hop_events.push(Event { seg: u32::MAX, m: m as u8, f: fe as u32, kind: 1, v: 190.0, x: pos[(fe * n + m) * 2] });
+                }
+            }
+        }
+    }
+    // ----- jostle: marbles that overlap shove each other apart and the shove fades, so a close pack really bumps
+    let mut bumps = 0usize;
+    {
+        let mut off = vec![(0f64, 0f64); n];
+        let (lo, hi) = (RAD, W - RAD);
+        for f in 0..ef {
+            for _ in 0..2 {
+                for a in 0..n { for b in (a + 1)..n {
+                    let pa = (pos[(f * n + a) * 2] as f64 + off[a].0, pos[(f * n + a) * 2 + 1] as f64 + off[a].1);
+                    let pb = (pos[(f * n + b) * 2] as f64 + off[b].0, pos[(f * n + b) * 2 + 1] as f64 + off[b].1);
+                    let (dx, dy) = (pa.0 - pb.0, pa.1 - pb.1);
+                    let d = dx.hypot(dy).max(1e-6);
+                    if d >= 2.0 * RAD { continue; }
+                    let ov = 2.0 * RAD - d;
+                    // mostly sideways: marbles rolling on a ramp are shoved off each other's line, not through the surface
+                    let (nx, ny) = if dx.abs() < 1.0 && dy.abs() < 1.0 { (if a < b { -1.0 } else { 1.0 }, 0.0) } else { (dx / d, dy / d * 0.35) };
+                    let nl = nx.hypot(ny);
+                    let (nx, ny) = (nx / nl, ny / nl);
+                    off[a].0 += nx * ov * 0.5; off[a].1 += ny * ov * 0.5;
+                    off[b].0 -= nx * ov * 0.5; off[b].1 -= ny * ov * 0.5;
+                    if ov > 3.0 { bumps += 1; }
+                } }
+            }
+            for i in 0..n {
+                let l = off[i].0.hypot(off[i].1);
+                if l > 26.0 { off[i].0 *= 26.0 / l; off[i].1 *= 26.0 / l; }
+                let x = (pos[(f * n + i) * 2] as f64 + off[i].0).clamp(lo, hi);
+                pos[(f * n + i) * 2] = x as f32;
+                pos[(f * n + i) * 2 + 1] += off[i].1 as f32;
+                off[i].0 *= 0.86; off[i].1 *= 0.86;
+            }
+        }
+    }
+    if std::env::var("MARBEAT_DEBUG_DESIGN").is_ok() { let tc = touch.iter().filter(|t| **t == 1).count(); eprintln!("hops {}, bump frames {}, touching frames {}/{} (target {:.1}s)", hop_events.len(), bumps, tc, touch.len(), target); }
     // impacts: the reference marble's, shifted by each marble's delay (so they are on the half-beat grid too)
     let mut events: Vec<Event> = vec![];
     for ev in &reference.events {
@@ -444,6 +520,7 @@ pub fn build(cfg: &DesignCfg) -> Option<Designed> {
             if fr < ef { events.push(Event { seg: ev.seg, m: i as u8, f: fr as u32, kind: ev.kind, v: ev.v, x: ev.x }); }
         }
     }
+    events.extend(hop_events);
     events.sort_by_key(|e| e.f);
     // finish: who crosses first, and when it all ends
     let mut sim = Sim { n, frames: ef, pos, lead: vec![0; ef], cam: vec![0.0; ef], twin: 0.0, winner: 0, fins: vec![-1.0; n], events, touch, rank };
@@ -466,5 +543,41 @@ pub fn build(cfg: &DesignCfg) -> Option<Designed> {
     }
     sim.frames = end; sim.fins = fins; sim.winner = w; sim.twin = wf as f64 / FPS;
     relabel(&mut sim, cfg);
+    // ----- scenery: rails and pegs filling the empty space so the whole thing reads as one track. They never touch a marble.
+    {
+        let nn = sim.n;
+        let mut grid: std::collections::HashMap<(i32, i32), Vec<(f32, f32)>> = Default::default();
+        for f in (0..sim.frames).step_by(2) { for m in 0..nn { let (x, y) = sim.at(f, m); grid.entry(((x / 40.0) as i32, (y / 40.0) as i32)).or_default().push((x as f32, y as f32)); } }
+        let real: Vec<(f64, f64, f64, f64)> = course.segs.iter().map(|g| (g.x1, g.y1, g.x2, g.y2)).collect();
+        let near_real = |x: f64, y: f64, rad: f64| -> bool { real.iter().any(|g| {
+            let (dx, dy) = (g.2 - g.0, g.3 - g.1); let l2 = (dx * dx + dy * dy).max(1e-6);
+            let u = (((x - g.0) * dx + (y - g.1) * dy) / l2).clamp(0.0, 1.0);
+            (x - (g.0 + u * dx)).hypot(y - (g.1 + u * dy)) < rad }) };
+        let clear = |x: f64, y: f64, rad: f64| -> bool {
+            let (gx, gy) = ((x / 40.0) as i32, (y / 40.0) as i32);
+            let reach = ((rad / 40.0).ceil() as i32) + 1;
+            for dx in -reach..=reach { for dy in -reach..=reach { if let Some(v) = grid.get(&(gx + dx, gy + dy)) { for p in v { if ((p.0 as f64 - x).powi(2) + (p.1 as f64 - y).powi(2)).sqrt() < rad { return false; } } } } }
+            !near_real(x, y, rad + 10.0)
+        };
+        let mut y = 150.0;
+        let mut placed = 0;
+        while y < finish_y + 100.0 && placed < 900 {
+            for _ in 0..8 {
+                let x = 24.0 + rng.next() * (W - 48.0);
+                let yy = y + rng.next() * 60.0;
+                if rng.next() < 0.35 {
+                    if clear(x, yy, RAD + 5.0 + 12.0) { course.segs.push(Seg { x1: x, y1: yy, x2: x, y2: yy, r: 5.0, e: 0.9, kind: Kind::Peg, t0: 1e9, vis0: -1e9, t1: 1e9, shape: shape::PEG, owner: 255, kick: 0.0, bvx: 0.0 }); placed += 1; }
+                } else {
+                    // rails tilt in alternating directions row by row: a zig-zag track
+                    let dir = if ((yy / 140.0) as i64) % 2 == 0 { 1.0 } else { -1.0 };
+                    let ang = dir * (0.28 + 0.4 * rng.next());
+                    let (dx, dy) = (ang.cos() * 30.0, ang.sin() * 30.0);
+                    if clear(x, yy, RAD + 3.0 + 30.0 + 8.0) { course.segs.push(Seg { x1: x - dx, y1: yy - dy, x2: x + dx, y2: yy + dy, r: 3.0, e: 0.9, kind: Kind::Ramp, t0: 1e9, vis0: -1e9, t1: 1e9, shape: shape::PLANK, owner: 255, kick: 0.0, bvx: 0.0 }); placed += 1; }
+                }
+            }
+            y += 38.0;
+        }
+        if std::env::var("MARBEAT_DEBUG_DESIGN").is_ok() { eprintln!("scenery pieces: {placed}"); }
+    }
     Some(Designed { course, sim, landings, kinds })
 }
