@@ -75,7 +75,7 @@ struct App {
     ff_msg: Arc<Mutex<String>>,
     singing: bool,
     crowd: bool,
-    sync_style: u8, // 0 = designed map, 1 = lane pads
+    sync_style: u8, // 0 = track race, 1 = lane pads, 2 = lane pads 2 (race look)
     sync_music: bool,
     av_offset_ms: i32,
     show_lyrics: bool,
@@ -204,7 +204,7 @@ impl App {
         busy.store(true, Ordering::SeqCst);
         prog.store(0, Ordering::SeqCst);
         std::thread::spawn(move || {
-            let tl = build_timeline(&RaceSetup { seed: &seed, map: key, n, len, beats: &beats, plan: &plan, winner: rw, bars: &bars_s, compose: compose && sync_style == 1, crowd: crowd_n, designed: compose && sync_style == 0 });
+            let tl = build_timeline(&RaceSetup { seed: &seed, map: key, n, len, beats: &beats, plan: &plan, winner: rw, bars: &bars_s, compose: compose && sync_style >= 1, crowd: crowd_n, designed: compose && sync_style == 0, race: sync_style == 2 });
             let cs: Vec<CharStyle> = chars.iter().map(|(n, c)| CharStyle { name: n.clone(), color: *c, label: "Marble".into() }).collect();
             let sc = Scene { lyrics: &lyr, bars: &bars_s, tl: &tl, chars: &cs, beats: &beats, title: &title_s, pro_post: true };
             let r = marbeat_core::export::export_mp4(&sc, song.as_ref(), &out, if hd { 2 } else { 1 }, |f, t| { prog.store(f, Ordering::Relaxed); total.store(t, Ordering::Relaxed); !cancel.load(Ordering::Relaxed) });
@@ -231,7 +231,7 @@ impl App {
                 if let Some(x) = j["singing"].as_bool() { self.singing = x; }
                 if let Some(x) = j["sync_music"].as_bool() { self.sync_music = x; }
                 if let Some(x) = j["crowd"].as_bool() { self.crowd = x; }
-                if let Some(x) = j["sync_style"].as_u64() { if j["v22_track"].as_bool().unwrap_or(false) { self.sync_style = (x as u8).min(1); } }
+                if let Some(x) = j["sync_style"].as_u64() { if j["v22_track"].as_bool().unwrap_or(false) { self.sync_style = (x as u8).min(2); } }
                 if let Some(r) = j["recent"].as_array() { self.recent = r.iter().filter_map(|x| x.as_str().map(String::from)).collect(); }
                 if let Some(x) = j["last_export"].as_str() { self.last_export = Some(x.into()); }
                 if let Some(x) = j["last_project"].as_str() { let p = std::path::PathBuf::from(x); if p.exists() { self.proj_path = Some(p); } }
@@ -407,7 +407,7 @@ impl App {
         self.rig_winner = j["rig_winner"].as_u64().map(|x| x as usize);
         self.plan = j["plan"].as_array().map(|a| a.iter().filter_map(|p| Some((p[0].as_f64()?, p[1].as_u64()? as usize))).collect()).unwrap_or_default();
         self.sync_music = j["sync_music"].as_bool().unwrap_or(true);
-        self.sync_style = (j["sync_style"].as_u64().unwrap_or(0) as u8).min(1);
+        self.sync_style = (j["sync_style"].as_u64().unwrap_or(0) as u8).min(2);
         self.crowd = j["crowd"].as_bool().unwrap_or(false);
         self.show_lyrics = j["show_lyrics"].as_bool().unwrap_or(true);
         if let Some(h) = j["hd"].as_bool() { self.hd = h; }
@@ -725,7 +725,7 @@ impl App {
         self.cur_compose = auto;
         self.cur_bars = if auto { marbeat_core::audio::intensity_bars(self.song.as_ref().unwrap()) } else { vec![] };
         if auto { self.len = len as f32; }
-        self.tl = Some(build_timeline(&RaceSetup { seed: &self.eff_seed, map: key, n, len, beats: &self.beats, plan: &plan, winner, bars: &self.cur_bars, compose: auto && self.sync_style == 1, crowd: if self.crowd { 3 } else { 0 }, designed: auto && self.sync_style == 0 }));
+        self.tl = Some(build_timeline(&RaceSetup { seed: &self.eff_seed, map: key, n, len, beats: &self.beats, plan: &plan, winner, bars: &self.cur_bars, compose: auto && self.sync_style >= 1, crowd: if self.crowd { 3 } else { 0 }, designed: auto && self.sync_style == 0, race: self.sync_style == 2 }));
         self.chars = self.active.iter().map(|&i| CharStyle { name: self.roster[i].1.clone(), color: self.roster[i].0, label: if self.tour.is_some() { format!("Round {}", self.tour.as_ref().unwrap().round + 1) } else { "Marble".into() } }).collect();
         self.t = 0.0;
         self.playing = true;
@@ -815,8 +815,10 @@ impl App {
                 ui.horizontal(|ui| {
                     if ui.selectable_label(self.sync_style == 0, "Track race").clicked() { self.sync_style = 0; a.rebuild = true; a.save = true; }
                     if ui.selectable_label(self.sync_style == 1, "Lane pads").clicked() { self.sync_style = 1; a.rebuild = true; a.save = true; }
+                    if ui.selectable_label(self.sync_style == 2, "Lane pads 2").clicked() { self.sync_style = 2; a.rebuild = true; a.save = true; }
                 });
-                if self.sync_style == 0 { muted(ui, "A winding track of ramps and trampolines. Marbles roll down it, bump and shove each other, leapfrog, and tap the beat on their own grooves. Falls and bounces land on the beat and the winner crosses on the last beat."); }
+                if self.sync_style == 2 { muted(ui, "Lane pads in a race: one tight pack winds down a railed track, everyone on their own beat pattern, shoving and passing each other, longer ramp pads. Every hit is on the beat grid.") }
+                else if self.sync_style == 0 { muted(ui, "A winding track of ramps and trampolines. Marbles roll down it, bump and shove each other, leapfrog, and tap the beat on their own grooves. Falls and bounces land on the beat and the winner crosses on the last beat."); }
                 else { muted(ui, "Every marble hits pads on its own beat pattern, wandering across the whole track and passing each other. Every hit sits on the beat grid and the winner crosses on the last beat."); }
             }
             else { muted(ui, "Off: you pick the length and use Director for lead changes."); }

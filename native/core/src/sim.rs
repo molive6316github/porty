@@ -427,6 +427,8 @@ pub struct RaceSetup<'a> {
     pub crowd: usize,
     /// compose a designed map (ramps and trampolines) instead of the lane pads
     pub designed: bool,
+    /// lane pads with the marble-race look (a tight railed pack)
+    pub race: bool,
 }
 
 pub fn build_timeline(s: &RaceSetup) -> Timeline {
@@ -440,7 +442,7 @@ pub fn build_timeline(s: &RaceSetup) -> Timeline {
         }
     }
     if s.compose && s.beats.len() > 8 {
-        let cfg = crate::beatmode::BeatCfg { beats: s.beats, bars: s.bars, n: s.n, seed: s.seed, map: s.map, len: s.len, plan: s.plan, winner: s.winner, crowd: s.crowd };
+        let cfg = crate::beatmode::BeatCfg { beats: s.beats, bars: s.bars, n: s.n, seed: s.seed, map: s.map, len: s.len, plan: s.plan, winner: s.winner, crowd: s.crowd, race: s.race };
         if let Some((course, sim, total)) = crate::beatmode::build(&cfg) {
             let frames = (s.len * FPS).ceil() as usize;
             let lead_a: Vec<u8> = (0..=frames).map(|f| sim.lead[f.min(sim.frames - 1)]).collect();
@@ -558,6 +560,31 @@ pub fn alignment_stats(tl: &Timeline, beats: &[f64]) -> (usize, usize, usize, f6
 mod tests {
     use super::*;
     #[test]
+    fn lane_pads_race_look_is_synced_packed_and_clear() {
+        let beats: Vec<f64> = (0..70).map(|i| 0.4 + i as f64 * 60.0 / 128.0).collect();
+        let bars: Vec<(f64, f32)> = (0..18).map(|i| (0.4 + i as f64 * 4.0 * 60.0 / 128.0, [0.1f32, 0.2, 0.4, 0.6, 0.9, 1.0, 1.0, 0.9, 0.5, 0.3, 0.2, 0.2, 0.7, 0.9, 1.0, 0.8, 0.4, 0.2][i])).collect();
+        let plan = [(8.0, 2usize), (16.0, 4usize)];
+        let mut grid: Vec<f64> = vec![];
+        for w in beats.windows(2) { grid.push(w[0]); grid.push((w[0] + w[1]) * 0.5); }
+        for seed in ["race-a", "race-b", "race-c"] { for map in ["neon", "chaos", "funnel"] {
+            let tl = build_timeline(&RaceSetup { seed, map, n: 6, len: 30.0, beats: &beats, plan: &plan, winner: Some(3), bars: &bars, compose: true, crowd: 0, designed: false, race: true });
+            let named: Vec<&Event> = tl.sim.events.iter().filter(|e| (e.m as usize) < 6).collect();
+            let off_grid = named.iter().filter(|e| { let t = e.f as f64 / FPS; grid.iter().map(|g| (g - t).abs()).fold(f64::MAX, f64::min) > 1.0 / FPS + 1e-6 }).count();
+            let (mut min_gap, mut max_v, mut spread) = (f64::MAX, 0.0f64, 0.0f64);
+            let mut samples = 0.0;
+            for f in 1..tl.sim.frames { for a in 0..6 { let (ax, ay) = tl.sim.at(f, a); let (px, py) = tl.sim.at(f - 1, a); { let v = (ax - px).hypot(ay - py) * FPS; if v > 1450.0 { eprintln!("  fast {:.0} at t={:.2}s marble {a} from ({px:.0},{py:.0}) to ({ax:.0},{ay:.0}) win {:.2}", v, f as f64 / FPS, tl.win_time); } max_v = max_v.max(v); } for b in (a + 1)..6 { let (bx, by) = tl.sim.at(f, b); let d = (ax - bx).hypot(ay - by); if d < min_gap { min_gap = d; if d < 22.0 { eprintln!("  close {:.0}px at t={:.2}s pair {a},{b} at ({ax:.0},{ay:.0}) win {:.2}", d, f as f64 / FPS, tl.win_time); } } } }
+                if f > 120 && (f as f64 / FPS) < tl.win_time - 2.0 { let ys: Vec<f64> = (0..6).map(|m| tl.sim.at(f, m).1).collect(); spread += ys.iter().cloned().fold(f64::MIN, f64::max) - ys.iter().cloned().fold(f64::MAX, f64::min); samples += 1.0; } }
+            let spread = spread / samples;
+            eprintln!("race {seed}/{map}: off-grid {off_grid}, finish {:.2}s, winner {}, closest {:.0}px, top speed {:.0}, average pack depth {:.0}px", tl.win_time, tl.sim.winner, min_gap, max_v, spread);
+            assert_eq!(off_grid, 0, "{map}: hits must sit on the beat grid");
+            assert_eq!(tl.sim.winner, 3, "{map}: winner");
+            assert!((tl.win_time - 27.5).abs() < 1.2, "{map}: finish {}", tl.win_time);
+            assert!(min_gap >= 2.0 * RAD - 6.0, "{map}: marbles overlap ({min_gap})");
+            assert!(max_v <= 1480.0, "{map}: speed {max_v}");
+            assert!(spread <= 330.0, "{map}: pack too stretched ({spread})");
+        } }
+    }
+    #[test]
     fn beat_mode_is_locked_to_the_music_but_varied() {
         let beats: Vec<f64> = (0..70).map(|i| 0.4 + i as f64 * 60.0 / 128.0).collect();
         let bars: Vec<(f64, f32)> = (0..18).map(|i| (0.4 + i as f64 * 4.0 * 60.0 / 128.0, [0.1f32, 0.2, 0.4, 0.6, 0.9, 1.0, 1.0, 0.9, 0.5, 0.3, 0.2, 0.2, 0.7, 0.9, 1.0, 0.8, 0.4, 0.2][i])).collect();
@@ -565,7 +592,7 @@ mod tests {
         let mut grid: Vec<f64> = vec![];
         for w in beats.windows(2) { grid.push(w[0]); grid.push((w[0] + w[1]) * 0.5); }
         for map in ["neon", "pachinko", "slide", "spinner", "funnel", "chaos"] {
-            let tl = build_timeline(&RaceSetup { seed: "beat-test", map, n: 6, len: 30.0, beats: &beats, plan: &plan, winner: Some(3), bars: &bars, compose: true, crowd: 0, designed: false });
+            let tl = build_timeline(&RaceSetup { seed: "beat-test", map, n: 6, len: 30.0, beats: &beats, plan: &plan, winner: Some(3), bars: &bars, compose: true, crowd: 0, designed: false, race: false });
             let named: Vec<&Event> = tl.sim.events.iter().filter(|e| (e.m as usize) < 6).collect();
             // 1. every hit sits on the beat / half-beat grid
             let off_grid = named.iter().filter(|e| { let t = e.f as f64 / FPS; grid.iter().map(|g| (g - t).abs()).fold(f64::MAX, f64::min) > 1.0 / FPS + 1e-6 }).count();
@@ -656,7 +683,7 @@ mod tests {
     fn warp_puts_impacts_on_the_beat() {
         let beats: Vec<f64> = (0..70).map(|i| 0.4 + i as f64 * 60.0 / 128.0).collect();
         for map in ["neon", "pachinko", "slide", "spinner", "funnel", "chaos"] {
-            let tl = build_timeline(&RaceSetup { seed: "sync-test", map, n: 6, len: 30.0, beats: &beats, plan: &[], winner: None, bars: &[], compose: false, crowd: 0, designed: false });
+            let tl = build_timeline(&RaceSetup { seed: "sync-test", map, n: 6, len: 30.0, beats: &beats, plan: &[], winner: None, bars: &[], compose: false, crowd: 0, designed: false, race: false });
             let (n, before, after, lo, hi) = alignment_stats(&tl, &beats);
             let (cb, ca) = beat_coverage(&tl, &beats);
             eprintln!("{map}: beats with a hit on them {:.0}% -> {:.0}%", cb * 100.0, ca * 100.0);
